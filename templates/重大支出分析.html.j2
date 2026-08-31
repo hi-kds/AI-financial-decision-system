@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>重大支出分析</title>
+<style>
+  :root{
+    --bg:#F5F6F3; --surface:#FFFFFF; --ink:#1E2523; --ink-soft:#5C6660; --ink-faint:#97A19A;
+    --line:#DADFDA; --positive:#2F6F4F; --negative:#A83A32; --pending:#B8862F; --pending-bg:#FBF3E3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); }
+  .page{ max-width:920px; margin:0 auto; padding:48px 32px 96px; }
+
+  .masthead{ border-bottom:1px solid var(--line); padding-bottom:20px; margin-bottom:32px; }
+  .tab{ display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--ink-faint); border:1px solid var(--line); padding:3px 8px; border-radius:2px; margin-bottom:14px; }
+  h1{ font-size:28px; margin:0 0 8px; font-weight:600; letter-spacing:-.01em; }
+  .meta{ font-size:13px; color:var(--ink-soft); font-family:var(--mono); }
+
+  section{ margin-bottom:40px; }
+  h2{ font-size:16px; margin-bottom:14px; font-weight:600; }
+
+  .premise{ border:1px solid var(--line); }
+  .premise dl{ display:grid; grid-template-columns:220px 1fr; margin:0; }
+  .premise dt{ padding:10px 14px; border-top:1px solid var(--line); font-size:12px; color:var(--ink-soft); }
+  .premise dt:first-of-type{ border-top:none; }
+  .premise dd{ margin:0; padding:10px 14px; border-top:1px solid var(--line); font-family:var(--mono); font-size:13px; }
+  .premise dd:first-of-type{ border-top:none; }
+
+  .scenarios{ display:grid; grid-template-columns:repeat(4,1fr); border:1px solid var(--line); }
+  .scenario{ padding:18px; border-right:1px solid var(--line); }
+  .scenario:last-child{ border-right:none; }
+  .scenario h3{ font-size:12px; margin:0 0 14px; color:var(--ink-soft); font-weight:500; text-transform:uppercase; letter-spacing:.04em; }
+  .scenario .avail-label{ font-size:10px; color:var(--ink-faint); margin-bottom:2px; }
+  .scenario .avail{ font-family:var(--mono); font-size:20px; font-variant-numeric:tabular-nums; margin-bottom:16px; }
+
+  .gauge{ position:relative; height:26px; background:var(--surface); border:1px solid var(--line); margin-bottom:6px; }
+  .gauge .fill{ position:absolute; top:0; bottom:0; left:0; background:var(--positive); opacity:.22; }
+  .gauge.below .fill{ background:var(--negative); }
+  .gauge .threshold{ position:absolute; top:-14px; bottom:-2px; width:1px; background:var(--ink); }
+  .gauge .threshold::before{ content:'安全线'; position:absolute; top:-14px; left:4px; font-size:9px; color:var(--ink-soft); white-space:nowrap; }
+
+  .status{ font-size:11px; margin-bottom:3px; }
+  .status .dot{ display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:5px; }
+  .status.ok .dot{ background:var(--positive); }
+  .status.warn .dot{ background:var(--negative); }
+
+  .affects{ font-size:11px; color:var(--ink-soft); margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+
+  .detail{ border-top:1px solid var(--line); padding:18px 0; }
+  .detail:last-child{ border-bottom:1px solid var(--line); }
+  .detail h3{ font-size:14px; margin:0 0 10px; }
+  .detail dl{ margin:0; font-size:12px; color:var(--ink-soft); }
+  .detail dt{ display:inline; font-weight:500; color:var(--ink); }
+  .detail dd{ display:inline; margin:0 0 0 4px; }
+  .detail p{ margin:0 0 6px; }
+
+  footer.calc-note{ border-top:1px solid var(--line); padding-top:20px; font-size:12px; color:var(--ink-soft); }
+  footer.calc-note h3{ font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); margin-bottom:8px; }
+  footer.calc-note li{ margin-bottom:4px; }
+
+  @media (max-width:640px){
+    .scenarios{ grid-template-columns:repeat(2,1fr); }
+    .scenario:nth-child(2){ border-right:none; }
+    .premise dl{ grid-template-columns:140px 1fr; }
+    .page{ padding:32px 16px 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="tab">账本 · 重大支出</div>
+    <h1>重大支出分析</h1>
+    <div class="meta">生成日期 {{ 生成日期 }} · 数据日期 {{ 数据日期 }} · 币种 {{ inputs['币种'] }}</div>
+  </header>
+
+  <section>
+    <h2>前提信息</h2>
+    <div class="premise">
+      <dl>
+        <dt>准备支付金额</dt><dd>{{ '%.2f'|format(inputs['准备支付金额']) }} {{ inputs['币种'] }}</dd>
+        <dt>币种</dt><dd>{{ inputs['币种'] }}</dd>
+        <dt>计划支付日期</dt><dd>{{ inputs['计划支付日期'] }}</dd>
+        <dt>账户安全余额线</dt><dd>{{ '%.2f'|format(inputs['账户安全余额线']) }} {{ inputs['币种'] }}</dd>
+        <dt>当前可用资金</dt><dd>{{ '%.2f'|format(data_summary['可立即使用资金（目标币种）']) }} {{ inputs['币种'] }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <h2>方案对比</h2>
+    <div class="scenarios">
+      {% for s in scenarios %}
+      {% set avail = s['付款后立即可用资金'] %}
+      {% set safety = inputs['账户安全余额线'] %}
+      {% set ratio = (avail / safety * 100) if safety > 0 else 0 %}
+      {% set fill_w = 0 if ratio < 0 else (100 if ratio > 100 else ratio) %}
+      {% set below30 = s['未来30天是否低于安全线']['是'] %}
+      {% set below90 = s['未来90天是否低于安全线']['是'] %}
+      <div class="scenario">
+        <h3>{{ s['方案'] }}</h3>
+        <div class="avail-label">{{ '付款后立即可用' if not loop.last else '账户可用资金' }}</div>
+        <div class="avail" style="color:{{ 'var(--negative)' if avail < 0 else 'var(--positive)' }};">{{ '%.2f'|format(avail) }}</div>
+        <div class="gauge {{ 'below' if below30 or below90 else '' }}">
+          <div class="fill" style="width:{{ '%.1f'|format(fill_w) }}%"></div>
+          <div class="threshold" style="left:100%"></div>
+        </div>
+        <div class="status {{ 'warn' if below30 else 'ok' }}"><span class="dot"></span>30天内 {{ '低于安全线' if below30 else '不低于安全线' }}{% if below30 %}(差额 {{ '%.2f'|format(s['未来30天是否低于安全线']['差额']) }}){% endif %}</div>
+        <div class="status {{ 'warn' if below90 else 'ok' }}"><span class="dot"></span>90天内 {{ '低于安全线' if below90 else '不低于安全线' }}{% if below90 %}(差额 {{ '%.2f'|format(s['未来90天是否低于安全线']['差额']) }}){% endif %}</div>
+        <div class="affects">受影响支出:{% if s['可能受影响的已确定支出'] %}{% for a in s['可能受影响的已确定支出'] %}{{ a['事件'] }}({{ '%.2f'|format(a['金额变化']) }} {{ inputs['币种'] }}){% if not loop.last %}; {% endif %}{% endfor %}{% else %}无{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <p style="font-size:11px;color:var(--ink-faint);margin-top:8px;">标尺填充 = 付款后可用资金 ÷ 安全线(封顶100%);低于安全线时填充切换为警示色。所有财务数字由计算层脚本产生。</p>
+  </section>
+
+  <section>
+    <h2>方案详情</h2>
+    {% for s in scenarios %}
+    <div class="detail">
+      <h3>{{ s['方案'] }}</h3>
+      <p><dt>付款计划:</dt><dd>{% for p in s['付款计划'] %}{{ p['日期'] }} 支付 {{ '%.2f'|format(p['金额']) }} {{ inputs['币种'] }}{% if not loop.last %}; {% endif %}{% else %}无{% endfor %}</dd></p>
+      <p><dt>未来30天最低余额:</dt><dd>{{ '%.2f'|format(s['未来30天最低余额']) }} {{ inputs['币种'] }}</dd></p>
+      <p><dt>未来90天最低余额:</dt><dd>{{ '%.2f'|format(s['未来90天最低余额']) }} {{ inputs['币种'] }}</dd></p>
+      <p><dt>计算使用的资料(来源文件):</dt><dd>全局账本 {{ data_summary['未来确定支出（目标币种）']|length }} 笔已确认未来支出;余额数据源 {{ data_summary['余额数据源']|length }} 个账户;负债 {{ '%.2f'|format(data_summary['负债合计（目标币种）']) }} {{ inputs['币种'] }}</dd></p>
+      <p><dt>计算使用的假设:</dt><dd>{% for a in 假设说明 %}{{ a }}{% if not loop.last %}; {% endif %}{% endfor %}</dd></p>
+      <p><dt>还缺少的信息:</dt><dd>{% for m in 缺失信息 %}{{ m }}{% if not loop.last %}; {% endif %}{% else %}无{% endfor %}</dd></p>
+    </div>
+    {% endfor %}
+  </section>
+
+  <footer class="calc-note">
+    <h3>计算说明</h3>
+    <ul>
+      <li>所有金额均由计算层脚本(calc_scenario.py)计算,而非语言模型心算。</li>
+      {% set has_fx = namespace(found=false) %}
+      {% for a in 假设说明 %}{% if '汇率' in a %}{% set has_fx.found = true %}{% endif %}{% endfor %}
+      <li>涉及汇率换算的部分:{% if has_fx.found %}已在"计算使用的假设"中注明{% else %}本次分析未涉及汇率换算{% endif %}</li>
+    </ul>
+  </footer>
+
+</div>
+</body>
+</html>

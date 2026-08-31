@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>全局账本</title>
+<style>
+  :root{
+    --bg:#F5F6F3; --surface:#FFFFFF; --ink:#1E2523; --ink-soft:#5C6660; --ink-faint:#97A19A;
+    --line:#DADFDA; --positive:#2F6F4F; --negative:#A83A32; --pending:#B8862F; --pending-bg:#FBF3E3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); }
+  .page{ max-width:920px; margin:0 auto; padding:48px 32px 96px; }
+
+  .masthead{ border-bottom:1px solid var(--line); padding-bottom:20px; margin-bottom:28px; }
+  .tab{ display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--ink-faint); border:1px solid var(--line); padding:3px 8px; border-radius:2px; margin-bottom:14px; }
+  h1{ font-size:26px; margin:0 0 8px; font-weight:600; letter-spacing:-.01em; }
+  .meta{ font-size:13px; color:var(--ink-soft); font-family:var(--mono); display:flex; gap:18px; flex-wrap:wrap; }
+
+  .hero{ display:grid; grid-template-columns:repeat(4,1fr); border:1px solid var(--line); margin:20px 0 32px; background:var(--surface); border-radius:6px; overflow:hidden; }
+  .hero-item{ padding:18px 20px; border-right:1px solid var(--line); }
+  .hero-item:last-child{ border-right:none; }
+  .hero-label{ font-size:12px; color:var(--ink-soft); margin-bottom:6px; }
+  .hero-value{ font-family:var(--mono); font-size:22px; font-variant-numeric:tabular-nums; }
+  .hero-value.pos{ color:var(--positive); }
+  .hero-value.neg{ color:var(--negative); }
+  .hero-value.pend{ color:var(--pending); }
+  .hero-unit{ font-size:11px; color:var(--ink-faint); margin-top:4px; }
+
+  section{ margin-bottom:36px; }
+  h2{ font-size:15px; display:flex; align-items:baseline; gap:10px; margin-bottom:12px; font-weight:600; }
+  .idx{ font-family:var(--mono); font-size:11px; color:var(--ink-faint); width:18px; height:18px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:50%; }
+
+  .donut-wrap{ display:flex; align-items:center; gap:30px; border:1px solid var(--line); padding:22px 26px; background:var(--surface); border-radius:6px; flex-wrap:wrap; }
+  .donut{ width:150px; height:150px; border-radius:50%; position:relative; flex-shrink:0; }
+  .donut-hole{ position:absolute; inset:24px; background:var(--surface); border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .donut-center .val{ font-family:var(--mono); font-size:13px; font-variant-numeric:tabular-nums; }
+  .donut-center .lbl{ font-size:9px; color:var(--ink-soft); margin-top:2px; }
+  .legend{ list-style:none; margin:0; padding:0; font-size:13px; flex:1; min-width:170px; }
+  .legend li{ display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--line); }
+  .legend li:last-child{ border-bottom:none; }
+  .legend .dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .legend .amt{ margin-left:auto; font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--ink-soft); }
+
+  .scroll-box{ max-height:520px; overflow-y:auto; border:1px solid var(--line); }
+  table{ width:100%; border-collapse:collapse; font-size:12.5px; }
+  th{ text-align:left; font-weight:500; color:var(--ink-soft); font-size:11px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid var(--ink); padding:6px 8px; position:sticky; top:0; background:var(--bg); }
+  td{ padding:6px 8px; border-bottom:1px solid var(--line); }
+  .num{ font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .pos{ color:var(--positive); }
+  .neg{ color:var(--negative); }
+
+  tr.pending td{ background:var(--pending-bg); }
+  tr.pending td:first-child{ box-shadow:inset 3px 0 0 var(--pending); }
+  .tag{ font-size:10px; font-family:var(--mono); padding:1px 6px; border-radius:2px; border:1px solid currentColor; white-space:nowrap; }
+  .tag.ok{ color:var(--positive); }
+  .tag.pend{ color:var(--pending); }
+
+  .pending-banner{ background:var(--pending-bg); border:1px solid var(--pending); border-left:4px solid var(--pending); padding:10px 16px; font-size:13px; color:var(--pending); border-radius:0 6px 6px 0; margin:0 0 16px; font-weight:500; }
+
+  @media (max-width:640px){
+    .hero{ grid-template-columns:repeat(2,1fr); }
+    .hero-item:nth-child(2){ border-right:none; }
+    .page{ padding:32px 16px 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="tab">账本 · 全局</div>
+    <h1>全局账本</h1>
+    <div class="meta">
+      <span>生成日期 {{ 生成日期 }}</span>
+      <span>已确认 {{ 已确认交易数 }} / 待确认 {{ 待确认数 }} / 剔除 {{ 被剔除数 }} 笔</span>
+    </div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-item"><div class="hero-label">总收入</div><div class="hero-value pos">{{ '%.2f'|format(总收入) }}</div><div class="hero-unit">CNY</div></div>
+    <div class="hero-item"><div class="hero-label">总支出</div><div class="hero-value neg">{{ '%.2f'|format(总支出) }}</div><div class="hero-unit">CNY</div></div>
+    <div class="hero-item"><div class="hero-label">净结余</div><div class="hero-value {{ 'pos' if 净结余 >= 0 else 'neg' }}">{{ '%.2f'|format(净结余) }}</div><div class="hero-unit">CNY</div></div>
+    <div class="hero-item"><div class="hero-label">待确认</div><div class="hero-value pend">{{ 待确认数 }}</div><div class="hero-unit">笔</div></div>
+  </div>
+
+  <section>
+    <h2><span class="idx">一</span>支出类别构成</h2>
+    {% if 支出类别占比 %}
+    {% set total_exp = 支出类别占比|sum(attribute='金额') %}
+    <div class="donut-wrap">
+      <div class="donut" style="background:conic-gradient(
+        {% for c in 支出类别占比 %}{{ _palette[loop.index0 % _palette|length] }} {{ c['累计占比'] - c['占比'] }}% {{ c['累计占比'] }}%{% if not loop.last %},{% endif %}{% endfor %}
+      );">
+        <div class="donut-hole"><div class="donut-center"><div class="val">{{ '%.2f'|format(total_exp) }}</div><div class="lbl">总支出</div></div></div>
+      </div>
+      <ul class="legend">
+        {% for c in 支出类别占比 %}
+        <li><span class="dot" style="background:{{ _palette[loop.index0 % _palette|length] }}"></span>{{ c['类别'] }}<span class="amt">{{ '%.1f'|format(c['占比']) }}% · {{ '%.2f'|format(c['金额']) }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% else %}
+    <p style="color:var(--ink-faint);font-size:13px;">暂无支出数据。</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2><span class="idx">二</span>交易记录 <span style="font-weight:400;font-size:12px;color:var(--ink-faint);">(共 {{ _extra|length }} 笔,按日期倒序)</span></h2>
+    <div class="scroll-box">
+      <table>
+        <thead><tr><th>日期</th><th>平台</th><th>类别</th><th class="num">金额</th><th>币种</th><th>状态</th><th>备注</th></tr></thead>
+        <tbody>
+          {% for t in _extra|sort(attribute='日期', reverse=true) %}
+          <tr class="{{ 'pending' if t['待确认'] else '' }}">
+            <td>{{ t['日期'] }}</td>
+            <td>{{ t['平台'] }}</td>
+            <td>{{ t['类别'] }}{% if t['待确认'] %} <span class="tag pend">待确认</span>{% endif %}</td>
+            <td class="num {{ 'pos' if t['金额'] > 0 else 'neg' }}">{{ '%.2f'|format(t['金额']) }}</td>
+            <td>{{ t['币种'] }}</td>
+            <td>{{ t.get('状态','') }}</td>
+            <td>{{ t.get('备注','') or t.get('项目','') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="idx">三</span>已剔除记录 <span style="font-weight:400;font-size:12px;color:var(--ink-faint);">({{ 已剔除记录|length }} 笔)</span></h2>
+    <div class="scroll-box" style="max-height:320px;">
+      <table>
+        <thead><tr><th>日期</th><th>平台</th><th class="num">金额</th><th>币种</th><th>剔除原因</th><th>项目</th></tr></thead>
+        <tbody>
+          {% for r in 已剔除记录 %}
+          <tr><td>{{ r['日期'] }}</td><td>{{ r['平台'] }}</td><td class="num">{{ '%.2f'|format(r['金额']) }}</td><td>{{ r['币种'] }}</td><td>{{ r['原因'] }}</td><td>{{ r['项目'] }}</td></tr>
+          {% else %}
+          <tr><td colspan="6" style="color:var(--ink-faint);">无剔除记录</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="idx">四</span>待确认队列 <span style="font-weight:400;font-size:12px;color:var(--ink-faint);">({{ 待确认数 }} 笔)</span></h2>
+    <div class="pending-banner">以下交易类别无法自动确定,需用户确认后以 --confirm 写入确认记录。</div>
+    <div class="scroll-box" style="max-height:400px;">
+      <table>
+        <thead><tr><th>日期</th><th>平台</th><th>类别</th><th class="num">金额</th><th>币种</th><th>备注</th></tr></thead>
+        <tbody>
+          {% for t in _extra|selectattr('待确认')|sort(attribute='金额') %}
+          <tr class="pending"><td>{{ t['日期'] }}</td><td>{{ t['平台'] }}</td><td>{{ t['类别'] }}</td><td class="num neg">{{ '%.2f'|format(t['金额']) }}</td><td>{{ t['币种'] }}</td><td>{{ t.get('备注','') or t.get('项目','') }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div style="font-size:11px;color:var(--ink-faint);margin-top:24px;">数据来源:全局账本 CSV/JSON(数据层 ledger.py 输出) · 汇总数字由脚本计算,非语言模型心算</div>
+
+</div>
+</body>
+</html>

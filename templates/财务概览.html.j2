@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>财务概览</title>
+<style>
+  :root{
+    --bg:#F5F6F3; --surface:#FFFFFF; --ink:#1E2523; --ink-soft:#5C6660; --ink-faint:#97A19A;
+    --line:#DADFDA; --positive:#2F6F4F; --negative:#A83A32; --pending:#B8862F; --pending-bg:#FBF3E3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); }
+  .page{ max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+
+  .masthead{ border-bottom:1px solid var(--line); padding-bottom:20px; margin-bottom:32px; }
+  .tab{ display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--ink-faint); border:1px solid var(--line); padding:3px 8px; border-radius:2px; margin-bottom:14px; }
+  h1{ font-size:28px; margin:0 0 8px; font-weight:600; letter-spacing:-.01em; }
+  .meta{ font-size:13px; color:var(--ink-soft); display:flex; gap:20px; flex-wrap:wrap; font-family:var(--mono); }
+
+  .hero{ display:grid; grid-template-columns:repeat(4,1fr); border:1px solid var(--line); margin-bottom:48px; }
+  .hero-item{ padding:20px; border-right:1px solid var(--line); }
+  .hero-item:last-child{ border-right:none; }
+  .hero-label{ font-size:12px; color:var(--ink-soft); margin-bottom:8px; }
+  .hero-value{ font-family:var(--mono); font-size:24px; font-variant-numeric:tabular-nums; }
+  .hero-value.pos{ color:var(--positive); }
+  .hero-value.neg{ color:var(--negative); }
+  .hero-unit{ font-size:11px; color:var(--ink-faint); margin-top:4px; }
+
+  .composition{ display:flex; align-items:center; gap:32px; border:1px solid var(--line); padding:22px 24px; margin-bottom:48px; flex-wrap:wrap; }
+  .composition-label{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-faint); position:absolute; }
+  .donut{ width:140px; height:140px; border-radius:50%; position:relative; flex-shrink:0; }
+  .donut-hole{ position:absolute; inset:22px; background:var(--surface); border-radius:50%; }
+  .donut-center{ position:absolute; inset:22px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; }
+  .donut-center .val{ font-family:var(--mono); font-size:15px; font-variant-numeric:tabular-nums; }
+  .donut-center .lbl{ font-size:9px; color:var(--ink-soft); margin-top:2px; }
+  .legend{ list-style:none; margin:0; padding:0; font-size:13px; flex:1; min-width:160px; }
+  .legend li{ display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--line); }
+  .legend li:last-child{ border-bottom:none; }
+  .legend .dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .legend .pct{ margin-left:auto; font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .composition-note{ width:100%; font-size:11px; color:var(--ink-faint); margin-top:4px; }
+
+  section.ledger{ margin-bottom:40px; }
+  h2{ font-size:16px; display:flex; align-items:baseline; gap:10px; margin-bottom:14px; font-weight:600; }
+  .idx{ font-family:var(--mono); font-size:12px; color:var(--ink-faint); width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:50%; }
+
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th{ text-align:left; font-weight:500; color:var(--ink-soft); font-size:11px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid var(--ink); padding:6px 8px; }
+  td{ padding:8px; border-bottom:1px solid var(--line); }
+  .num{ font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tfoot .total td{ border-top:2px solid var(--ink); border-bottom:3px double var(--ink); font-weight:600; padding-top:10px; }
+  .ph-row td{ color:var(--ink-faint); font-style:italic; font-size:12px; border-bottom:none; }
+
+  .ph{ color:var(--pending); border-bottom:1px dashed var(--pending); font-style:italic; }
+
+  section.pending table{ background:var(--pending-bg); }
+  section.pending th{ border-bottom-color:var(--pending); }
+
+  footer.calc-note{ border-top:1px solid var(--line); padding-top:20px; font-size:12px; color:var(--ink-soft); }
+  footer.calc-note h3{ font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); margin-bottom:8px; }
+  footer.calc-note li{ margin-bottom:4px; }
+
+  .health-note{ font-size:12px; color:var(--ink-soft); margin-bottom:14px; }
+  .health-tag{ font-size:11px; font-family:var(--mono); padding:1px 7px; border:1px solid currentColor; border-radius:2px; white-space:nowrap; }
+  .health-tag.ok{ color:var(--positive); }
+  .health-tag.watch{ color:var(--pending); }
+  .health-tag.tight{ color:var(--negative); }
+  .health-tag.na{ color:var(--ink-faint); }
+
+  .advice-note{ font-size:12px; color:var(--ink-soft); margin-bottom:14px; padding:10px 12px; background:var(--excluded-bg,#F0F1EE); border-left:2px solid var(--ink-faint); }
+  .advice-list{ list-style:none; margin:0; padding:0; }
+  .advice-list li{ padding:12px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .advice-list li:last-child{ border-bottom:none; }
+  .advice-list .src{ display:block; font-size:11px; color:var(--ink-faint); margin-top:4px; }
+
+  @media (max-width:640px){
+    .hero{ grid-template-columns:repeat(2,1fr); }
+    .hero-item:nth-child(2){ border-right:none; }
+    table, th, td{ font-size:12px; }
+    .page{ padding:32px 16px 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="tab">账本 · 概览</div>
+    <h1>财务概览</h1>
+    <div class="meta">
+      <span>生成日期 {{ 生成日期 }}</span>
+      <span>数据日期 {{ 数据日期 }}</span>
+      <span>币种 {{ 目标币种 }}</span>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-item">
+      <div class="hero-label">现金</div>
+      <div class="hero-value pos">{{ '%.2f'|format(财务概览['现金合计']) }}</div>
+      <div class="hero-unit">{{ 目标币种 }}</div>
+    </div>
+    <div class="hero-item">
+      <div class="hero-label">可立即使用</div>
+      <div class="hero-value pos">{{ '%.2f'|format(财务概览['可立即使用资金合计']) }}</div>
+      <div class="hero-unit">{{ 目标币种 }}</div>
+    </div>
+    <div class="hero-item">
+      <div class="hero-label">资产</div>
+      <div class="hero-value">{{ '%.2f'|format(财务概览['其他资产合计']) }}</div>
+      <div class="hero-unit">{{ 目标币种 }}</div>
+    </div>
+    <div class="hero-item">
+      <div class="hero-label">负债</div>
+      <div class="hero-value neg">{{ '%.2f'|format(财务概览['负债合计']) }}</div>
+      <div class="hero-unit">{{ 目标币种 }}</div>
+    </div>
+  </section>
+
+  <section class="composition">
+    {% set cash_pct = 资产构成['现金占比'] if 资产构成['现金占比'] is not none else 0 %}
+    <div class="donut" style="background: conic-gradient(var(--positive) 0 {{ cash_pct }}%, var(--ink-faint) {{ cash_pct }}% 100%);">
+      <div class="donut-hole"></div>
+      <div class="donut-center">
+        <div class="val">{{ '%.2f'|format(资产构成['总资产']) }}</div>
+        <div class="lbl">总资产</div>
+      </div>
+    </div>
+    <ul class="legend">
+      <li><span class="dot" style="background:var(--positive)"></span>现金<span class="pct">{{ cash_pct }}%</span></li>
+      <li><span class="dot" style="background:var(--ink-faint)"></span>其他资产<span class="pct">{{ 100 - cash_pct }}%</span></li>
+    </ul>
+    <p class="composition-note">资产构成 = 现金 ÷ 总资产、其他资产 ÷ 总资产,不含负债。百分比由脚本按合计计算,不由语言模型估算。若现金占比为空(总资产为 0),环形图退化为纯灰色。</p>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">一</span>现金</h2>
+    <table>
+      <thead><tr><th>账户/平台</th><th class="num">金额</th><th>币种</th><th>数据日期</th><th>来源文件</th></tr></thead>
+      <tbody>
+        {% for a in 现金账户明细 %}
+        <tr><td>{{ a['账户'] }}</td><td class="num">{{ '%.2f'|format(a['金额']) }}</td><td>{{ a['币种'] }}</td><td>{{ a['数据日期'] }}</td><td>{{ a['来源'] }}</td></tr>
+        {% else %}
+        <tr><td colspan="5">(无现金账户)</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot><tr class="total"><td>合计</td><td class="num">{{ '%.2f'|format(财务概览['现金合计']) }}</td><td colspan="3">{{ 目标币种 }}</td></tr></tfoot>
+    </table>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">二</span>可立即使用的资金</h2>
+    <table>
+      <thead><tr><th>账户/平台</th><th class="num">可用金额</th><th>币种</th><th>数据日期</th><th>来源文件</th><th>受限/冻结原因</th></tr></thead>
+      <tbody>
+        {% for a in 现金账户明细 %}
+        <tr><td>{{ a['账户'] }}</td><td class="num">{{ '%.2f'|format(a['金额']) }}</td><td>{{ a['币种'] }}</td><td>{{ a['数据日期'] }}</td><td>{{ a['来源'] }}</td><td>—</td></tr>
+        {% else %}
+        <tr><td colspan="6">(无可用资金)</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot><tr class="total"><td>合计</td><td class="num">{{ '%.2f'|format(财务概览['可立即使用资金合计']) }}</td><td colspan="4">{{ 目标币种 }}</td></tr></tfoot>
+    </table>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">三</span>其他资产</h2>
+    <table>
+      <thead><tr><th>资产类型</th><th>名称/描述</th><th class="num">估值</th><th>币种</th><th>估值日期</th><th>来源文件</th></tr></thead>
+      <tbody>
+        {% for a in 资产账户明细 %}
+        <tr><td>定期/投资</td><td>{{ a['账户'] }}</td><td class="num">{{ '%.2f'|format(a['金额']) }}</td><td>{{ a['币种'] }}</td><td>{{ a['数据日期'] }}</td><td>{{ a['来源'] }}</td></tr>
+        {% else %}
+        <tr><td colspan="6">(无其他资产)</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">四</span>负债</h2>
+    <table>
+      <thead><tr><th>负债类型</th><th>债权人/平台</th><th class="num">金额</th><th>币种</th><th>数据日期</th><th>还款状态</th></tr></thead>
+      <tbody>
+        {% for d in 数据来源['债务记录'] %}
+        <tr><td>{{ d.get('负债类型', '—') }}</td><td>{{ d['债权人'] }}</td><td class="num">{{ '%.2f'|format(d['金额']) }}</td><td>{{ d['币种'] }}</td><td>{{ d.get('数据日期', '') }}</td><td>—</td></tr>
+        {% else %}
+        <tr><td colspan="6">(无负债)</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot><tr class="total"><td>合计</td><td></td><td class="num">{{ '%.2f'|format(财务概览['负债合计']) }}</td><td colspan="3">{{ 目标币种 }}</td></tr></tfoot>
+    </table>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">五</span>未来三个月确定支出</h2>
+    <table>
+      <thead><tr><th>支付项目</th><th class="num">金额</th><th>币种</th><th>预计支付日期</th><th>类别</th></tr></thead>
+      <tbody>
+        {% for e in 未来三个月确定支出 %}
+        <tr><td>{{ e['备注'] }}</td><td class="num">{{ '%.2f'|format(e['金额']) }}</td><td>{{ e['币种'] }}</td><td>{{ e['日期'] }}</td><td>{{ e['类别'] }}</td></tr>
+        {% else %}
+        <tr><td colspan="5">(未来三个月无确定支出)</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot><tr class="total"><td>合计</td><td class="num">{{ '%.2f'|format(未来三个月确定支出合计) }}</td><td colspan="3">{{ 目标币种 }}</td></tr></tfoot>
+    </table>
+  </section>
+
+  <section class="ledger pending">
+    <h2><span class="idx">六</span>待确认项</h2>
+    <p class="health-note">共 {{ 未确认交易总数 }} 笔待确认交易，合计 {{ '%.2f'|format(未确认交易合计金额) }} {{ 目标币种 }}。确认方式：由 Agent 逐条询问用户类别，用 global-ledger 的 --confirm 处理。</p>
+    <table>
+      <thead><tr><th>项目</th><th class="num">涉及金额</th><th>币种</th><th>来源平台</th><th>日期</th><th>无法确认的原因</th></tr></thead>
+      <tbody>
+        {% for t in _data['未确认交易（全部）'] %}
+        <tr><td>{{ t['备注'] }}</td><td class="num">{{ '%.2f'|format(t['金额']) }}</td><td>{{ t['币种'] }}</td><td>{{ t['平台'] }}</td><td>{{ t['日期'] }}</td><td>类别无法自动确定</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">七</span>财务健康评估</h2>
+    <div class="health-note">以下指标由脚本计算,状态判定基于通用参考区间(阈值可在计算脚本中调整),不构成专业财务、投资或税务建议。</div>
+    <table>
+      <thead><tr><th>指标</th><th class="num">数值</th><th>参考区间</th><th>状态</th><th>计算依据</th></tr></thead>
+      <tbody>
+        {% for h in 健康评估 %}
+        {% set s = h['状态'] %}
+        {% set cls = 'ok' if s == '健康' else ('watch' if s == '需关注' else ('tight' if s == '偏紧' else 'na')) %}
+        <tr>
+          <td>{{ h['指标'] }}</td>
+          <td class="num">{{ h['数值'] }}</td>
+          <td>{{ h['参考区间'] }}</td>
+          <td><span class="health-tag {{ cls }}">{{ s }}</span></td>
+          <td>{{ h['计算依据'] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="composition-note" style="margin-top:10px;">若计算所需数据(如月均支出)无法获取,该行状态为 <span class="health-tag na">数据不足</span>,并同时列入六、待确认项,不用假设值替代。月均支出(近6个月窗口): {{ '%.2f'|format(_data['月均支出（近6个月窗口）']) if _data['月均支出（近6个月窗口）'] is not none else '数据不足' }}</p>
+  </section>
+
+  <section class="ledger">
+    <h2><span class="idx">八</span>财务建议</h2>
+    <div class="advice-note">以下为基于以上数据的观察与讨论点,不构成专业财务、投资、税务或法律建议;涉及具体投资、借贷、税务决策请咨询持牌顾问。</div>
+    <ul class="advice-list">
+      {% for adv in 财务建议 %}
+      <li>
+        <span>{{ adv['观察'] }}</span>
+        <span class="src">依据:{{ adv['依据'] }}</span>
+      </li>
+      {% else %}
+      <li><span>(财务建议由 Agent 基于以上数据生成，此处为占位)</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <footer class="calc-note">
+    <h3>计算说明</h3>
+    <ul>
+      <li>所有汇总数字均由脚本计算,而非语言模型心算。计算脚本: src/billweave/calc_overview.py</li>
+      <li>数据来源: {{ 数据来源['全局账本'] }}；余额快照 balance/balance.xlsx；债务 debt/</li>
+      <li>本报告未使用任何未经用户确认的汇率换算</li>
+      <li>非目标币种余额(如有): {{ 所有币种余额 }}</li>
+    </ul>
+  </footer>
+
+</div>
+</body>
+</html>

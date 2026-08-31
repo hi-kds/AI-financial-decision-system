@@ -1,0 +1,36 @@
+# ---- 真实数据（永远不入版本库） ----
+bills/
+balance/
+debt/
+results/
+.env
+config.yaml
+
+# ---- 合成样例数据（可自由再生，默认 .gitignore） ----
+sample_data/bills/
+sample_data/balance/
+sample_data/debt/
+sample_data/results/
+!sample_data/README.md
+!sample_data/generate.py
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- OS ----
+.DS_Store
+Thumbs.db

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>每周财务摘要</title>
+<style>
+  :root{
+    --bg:#F5F6F3; --surface:#FFFFFF; --ink:#1E2523; --ink-soft:#5C6660; --ink-faint:#97A19A;
+    --line:#DADFDA; --positive:#2F6F4F; --negative:#A83A32; --pending:#B8862F; --pending-bg:#FBF3E3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); }
+  .page{ max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+
+  .masthead{ border-bottom:1px solid var(--line); padding-bottom:20px; margin-bottom:32px; }
+  .tab{ display:inline-block; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--ink-faint); border:1px solid var(--line); padding:3px 8px; border-radius:2px; margin-bottom:14px; }
+  h1{ font-size:26px; margin:0 0 8px; font-weight:600; letter-spacing:-.01em; }
+  .meta{ font-size:13px; color:var(--ink-soft); font-family:var(--mono); display:flex; gap:18px; flex-wrap:wrap; }
+
+  section{ margin-bottom:36px; }
+  h2{ font-size:15px; display:flex; align-items:baseline; gap:10px; margin-bottom:12px; font-weight:600; }
+  .idx{ font-family:var(--mono); font-size:11px; color:var(--ink-faint); width:18px; height:18px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:50%; }
+
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th{ text-align:left; font-weight:500; color:var(--ink-soft); font-size:11px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid var(--ink); padding:6px 8px; }
+  td{ padding:8px; border-bottom:1px solid var(--line); }
+  .num{ font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+  .delta{ font-family:var(--mono); font-weight:600; }
+  .delta.up{ color:var(--positive); }
+  .delta.down{ color:var(--negative); }
+  .delta.up::before{ content:'▲ '; }
+  .delta.down::before{ content:'▼ '; }
+
+  .flow{ display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); }
+  .flow-col{ background:var(--surface); padding:14px; }
+  .flow-col h3{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin:0 0 10px; }
+  .flow-row{ display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--line); gap:10px; }
+  .flow-row:last-child{ border-bottom:none; }
+  .flow-row .amt{ font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .flow-col.income .amt{ color:var(--positive); }
+  .flow-col.expense .amt{ color:var(--negative); }
+
+  section.pending table{ background:var(--pending-bg); }
+  section.pending th{ border-bottom-color:var(--pending); }
+
+  .empty-state{ text-align:center; padding:64px 20px; color:var(--ink-soft); font-size:15px; border:1px dashed var(--line); }
+  .empty-note{ font-size:11px; color:var(--ink-faint); margin-top:24px; text-align:center; }
+
+  @media (max-width:640px){
+    .flow{ grid-template-columns:1fr; }
+    table, th, td{ font-size:12px; }
+    .page{ padding:32px 16px 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="tab">账本 · 周报</div>
+    <h1>每周财务摘要</h1>
+    <div class="meta">
+      <span>本周范围 {{ 对比周期['本周']['开始'] }} 至 {{ 对比周期['本周']['结束'] }}</span>
+      <span>上周 {{ 对比周期['上周']['开始'] }} 至 {{ 对比周期['上周']['结束'] }}</span>
+      <span>生成日期 {{ 生成日期 }}</span>
+      <span>币种 {{ 目标币种 }}</span>
+    </div>
+  </header>
+
+  {% if not 是否有显著变化 %}
+  <div class="empty-state">本周无显著变化。</div>
+  {% endif %}
+
+  <section>
+    <h2><span class="idx">一</span>现金与负债变化</h2>
+    <table>
+      <thead><tr><th>项目</th><th class="num">上周</th><th class="num">本周</th><th class="num">变化</th><th>币种</th></tr></thead>
+      <tbody>
+        {% for key, label in [('总收入','总收入'), ('总支出','总支出'), ('净结余','净结余')] %}
+        {% set c = 变化汇总[key] %}
+        <tr>
+          <td>{{ label }}</td>
+          <td class="num">{{ '%.2f'|format(c['上期']) }}</td>
+          <td class="num">{{ '%.2f'|format(c['当前']) }}</td>
+          <td class="num"><span class="delta {{ 'up' if c['变动绝对值'] >= 0 else 'down' }}">{{ '%.2f'|format(c['变动绝对值']) }}</span>{% if c['变动百分比'] is not none %} <span style="color:var(--ink-faint);font-size:11px;">({{ '%.1f'|format(c['变动百分比']) }}%)</span>{% endif %}</td>
+          <td>{{ 目标币种 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="idx">二</span>本周最大收支</h2>
+    <div class="flow">
+      <div class="flow-col income">
+        <h3>收入 Top 3</h3>
+        {% for t in 本周最大收支['收入Top3'] %}
+        <div class="flow-row"><span>{{ t['项目'] }}</span><span class="amt">+{{ '%.2f'|format(t['金额']) }} {{ t['币种'] }}</span></div>
+        {% else %}
+        <div class="flow-row"><span>本周无收入</span></div>
+        {% endfor %}
+      </div>
+      <div class="flow-col expense">
+        <h3>支出 Top 3</h3>
+        {% for t in 本周最大收支['支出Top3'] %}
+        <div class="flow-row"><span>{{ t['项目'] }}</span><span class="amt">-{{ '%.2f'|format(t['金额']) }} {{ t['币种'] }}</span></div>
+        {% else %}
+        <div class="flow-row"><span>本周无支出</span></div>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="idx">三</span>新增未来支出</h2>
+    <table>
+      <thead><tr><th>项目</th><th class="num">金额</th><th>币种</th><th>预计支付日期</th></tr></thead>
+      <tbody>
+        {% for e in 未来支出 %}
+        <tr><td>{{ e['项目'] }}</td><td class="num">{{ '%.2f'|format(e['金额']) }}</td><td>{{ e['币种'] }}</td><td>{{ e['日期'] }}</td></tr>
+        {% else %}
+        <tr><td colspan="4" style="color:var(--ink-faint);">无已确认的未来支出</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="pending">
+    <h2><span class="idx">四</span>异常/待确认交易</h2>
+    <table>
+      <thead><tr><th>类型</th><th>描述</th><th class="num">涉及金额</th><th>币种</th><th>来源平台</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for t in 本周待确认交易 %}
+        <tr><td>{{ t['类型'] }}</td><td>{{ t['描述'] }}</td><td class="num">{{ '%.2f'|format(t['金额']) }}</td><td>{{ t['币种'] }}</td><td>{{ t['来源文件'] }}</td><td>{{ t['说明'] }}</td></tr>
+        {% else %}
+        <tr><td colspan="6" style="color:var(--ink-faint);">本周无待确认交易</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="idx">五</span>长期未更新账户</h2>
+    {% if _data.get('长期未更新账户') %}
+    <ul class="stale-list">
+      {% for a in 长期未更新账户 %}
+      <li><span>{{ a['账户'] }}</span><span class="days">最后更新 {{ a['日期'] }} · {{ a['天数'] }} 天前</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty-note">无长期未更新账户（所有账户余额快照均在 30 天内更新）。</p>
+    {% endif %}
+  </section>
+
+  <div class="empty-note">数据来源:{{ 数据来源['全局账本'] }} · 所有汇总数字由脚本计算,非语言模型心算。</div>
+
+</div>
+</body>
+</html>
