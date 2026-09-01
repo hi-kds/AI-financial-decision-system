@@ -12,7 +12,7 @@ global_ledger.py —— 数据层：清洗、去重、分类、输出干净账�
   6. 不生成任何 Markdown 或 HTML（呈现层职责）
 
 用法：
-  python ledger.py --finance-dir . [--confirm "2026-08-31|12.34|餐饮"]
+  python global_ledger.py --finance-dir D:/Hermes/finance [--confirm "2026-08-31|12.34|餐饮"]
 
 输出：
   results/raw/global_bill/global_ledger.csv
@@ -31,7 +31,9 @@ import sys
 from collections import defaultdict
 from datetime import date
 
-from billweave import common as fc
+# 导入共享工具（finance_common 位于 scripts/lib/，相对本文件上两级）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import finance_common as fc
 
 # 支出类别关键词（顺序即优先级）
 CATEGORY_RULES = [
@@ -264,6 +266,21 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
     #       永远看不到它们；汇总统计仍只用已确认部分（见第 16 节）
     all_txs_out = final_kept + pending
 
+    # 11.5 待确认交易的"类别"列直接显示 AI 推测值（仍带"待确认"标记，未终审不固化）
+    #     从旧 pending_queue.csv 读 AI推测类别，按 日期|平台|金额 匹配；重跑幂等保留
+    ai_map = {}
+    old_pending_path = os.path.join(output_dir, "pending_queue.csv")
+    if os.path.exists(old_pending_path):
+        with open(old_pending_path, newline="", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                k = f"{row['日期']}|{row['平台']}|{row['金额']}"
+                if row.get("AI推测类别"):
+                    ai_map[k] = row["AI推测类别"]
+    for tx in pending:
+        k = f"{tx['日期']}|{tx['平台']}|{tx['金额']}"
+        if k in ai_map:
+            tx["类别"] = ai_map[k]
+
     # 12. 输出 CSV（全量交易）
     csv_path = os.path.join(output_dir, "global_ledger.csv")
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -305,20 +322,38 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
             })
 
     # 15. 输出待确认队列（单独 CSV）
+    # 列"AI推测类别"由 Agent 填充（AI 依据商户名/金额/日期推测）,用户终审后
+    # 由 --confirm 固化到 confirm_records.json;脚本重跑不会覆盖该列内容。
     pending_csv = os.path.join(output_dir, "pending_queue.csv")
+    fieldnames = ["日期", "平台", "金额", "币种", "项目", "AI推测类别", "当前类别(待确认)"]
+    rows_out = []
+    for tx in sorted(pending, key=lambda x: x["日期"]):
+        rows_out.append({
+            "日期": tx["日期"],
+            "平台": tx["平台"],
+            "金额": tx["金额"],
+            "币种": tx["币种"],
+            "项目": tx.get("项目", ""),
+            "AI推测类别": tx.get("AI推测类别", ""),   # Agent 填;脚本重跑保留
+            "当前类别(待确认)": tx["类别"],            # 目前是"其他"或默认
+        })
+    # 读回旧的 AI 推测（脚本幂等:不因重跑丢失 AI 推测）
+    if os.path.exists(pending_csv):
+        try:
+            with open(pending_csv, newline="", encoding="utf-8-sig") as f:
+                old = {f"{r['日期']}|{r['平台']}|{r['金额']}": r.get("AI推测类别", "")
+                       for r in csv.DictReader(f)}
+            for r in rows_out:
+                k = f"{r['日期']}|{r['平台']}|{r['金额']}"
+                if k in old and old[k]:
+                    r["AI推测类别"] = old[k]
+        except Exception:
+            pass
     with open(pending_csv, "w", newline="", encoding="utf-8-sig") as f:
-        fieldnames = ["日期", "平台", "金额", "币种", "项目", "当前类别(待确认)"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for tx in sorted(pending, key=lambda x: x["日期"]):
-            writer.writerow({
-                "日期": tx["日期"],
-                "平台": tx["平台"],
-                "金额": tx["金额"],
-                "币种": tx["币种"],
-                "项目": tx.get("项目", ""),
-                "当前类别(待确认)": tx["类别"],  # 目前是"其他"或默认
-            })
+        for r in rows_out:
+            writer.writerow(r)
 
     # 16. 生成汇总统计 JSON
     # 注意：汇总只统计已确认交易（final_kept），待确认交易不计入收支
@@ -396,15 +431,13 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
 
 def main():
     ap = argparse.ArgumentParser(description="数据层：生成全局账本（CSV/JSON）")
-    ap.add_argument("--finance-dir", default=None,
+    ap.add_argument("--finance-dir", default="D:/Hermes/finance",
                     help="finance 数据根目录")
     ap.add_argument("--output-dir", default=None,
                     help="输出目录（默认 finance/results/raw/global_bill）")
     ap.add_argument("--confirm", action="append", default=[], metavar="日期|金额|类别",
                     help="确认待确认交易类别，可多次指定")
     args = ap.parse_args()
-    if not args.finance_dir:
-        args.finance_dir = os.environ.get("BILLWEAVE_DATA_DIR") or "."
 
     if args.output_dir is None:
         args.output_dir = os.path.join(args.finance_dir, "results", "raw", "global_bill")

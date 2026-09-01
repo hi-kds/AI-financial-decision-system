@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>全局账本</title>
+<title>{{ 季度名称 }}账单</title>
 <style>
   :root{
     --bg:#F5F6F3; --surface:#FFFFFF; --ink:#1E2523; --ink-soft:#5C6660; --ink-faint:#97A19A;
@@ -72,9 +72,10 @@
 <div class="page">
 
   <header class="masthead">
-    <div class="tab">账本 · 全局</div>
-    <h1>全局账本</h1>
+    <div class="tab">账本 · 季度</div>
+    <h1>{{ 季度名称 }}账单</h1>
     <div class="meta">
+      <span>季度范围 {{ 季度范围['开始'] }} ~ {{ 季度范围['结束'] }}</span>
       <span>生成日期 {{ 生成日期 }}</span>
       <span>已确认 {{ 已确认交易数 }} / 待确认 {{ 待确认数 }} / 剔除 {{ 被剔除数 }} 笔</span>
     </div>
@@ -104,25 +105,25 @@
       </ul>
     </div>
     {% else %}
-    <p style="color:var(--ink-faint);font-size:13px;">暂无支出数据。</p>
+    <p style="color:var(--ink-faint);font-size:13px;">本季度暂无支出数据。</p>
     {% endif %}
   </section>
 
   <section>
-    <h2><span class="idx">二</span>交易记录 <span style="font-weight:400;font-size:12px;color:var(--ink-faint);">(共 {{ _extra|length }} 笔,按日期倒序)</span></h2>
+    <h2><span class="idx">二</span>交易记录 <span style="font-weight:400;font-size:12px;color:var(--ink-faint);">(共 {{ 交易记录|length }} 笔,按日期倒序)</span></h2>
     <div class="scroll-box">
       <table>
         <thead><tr><th>日期</th><th>平台</th><th>类别</th><th class="num">金额</th><th>币种</th><th>状态</th><th>备注</th></tr></thead>
         <tbody>
-          {% for t in _extra|sort(attribute='日期', reverse=true) %}
+          {% for t in 交易记录|sort(attribute='日期', reverse=true) %}
           <tr class="{{ 'pending' if t['待确认'] else '' }}">
             <td>{{ t['日期'] }}</td>
             <td>{{ t['平台'] }}</td>
             <td>{{ t['类别'] }}{% if t['待确认'] %} <span class="tag pend">待确认</span>{% endif %}</td>
             <td class="num {{ 'pos' if t['金额'] > 0 else 'neg' }}">{{ '%.2f'|format(t['金额']) }}</td>
             <td>{{ t['币种'] }}</td>
-            <td>{{ t.get('状态','') }}</td>
-            <td>{{ t.get('备注','') or t.get('项目','') }}</td>
+            <td>{{ t['状态'] }}</td>
+            <td>{{ t['备注'] }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -139,7 +140,7 @@
           {% for r in 已剔除记录 %}
           <tr><td>{{ r['日期'] }}</td><td>{{ r['平台'] }}</td><td class="num">{{ '%.2f'|format(r['金额']) }}</td><td>{{ r['币种'] }}</td><td>{{ r['原因'] }}</td><td>{{ r['项目'] }}</td></tr>
           {% else %}
-          <tr><td colspan="6" style="color:var(--ink-faint);">无剔除记录</td></tr>
+          <tr><td colspan="6" style="color:var(--ink-faint);">本季度无剔除记录</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -152,15 +153,15 @@
       <table>
         <thead><tr><th>日期</th><th>平台</th><th>类别</th><th class="num">金额</th><th>币种</th><th>备注</th></tr></thead>
         <tbody>
-          {% for t in _extra|selectattr('待确认')|sort(attribute='金额') %}
-          <tr class="pending"><td>{{ t['日期'] }}</td><td>{{ t['平台'] }}</td><td>{{ t['类别'] }}</td><td class="num neg">{{ '%.2f'|format(t['金额']) }}</td><td>{{ t['币种'] }}</td><td>{{ t.get('备注','') or t.get('项目','') }}</td></tr>
+          {% for t in 交易记录|selectattr('待确认')|sort(attribute='金额') %}
+          <tr class="pending"><td>{{ t['日期'] }}</td><td>{{ t['平台'] }}</td><td>{{ t['类别'] }}</td><td class="num neg">{{ '%.2f'|format(t['金额']) }}</td><td>{{ t['币种'] }}</td><td>{{ t['备注'] }}</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   </section>
 
-  <div style="font-size:11px;color:var(--ink-faint);margin-top:24px;">数据来源:全局账本 CSV/JSON(数据层 global_ledger.py 输出) · 汇总数字由脚本计算,非语言模型心算</div>
+  <div style="font-size:11px;color:var(--ink-faint);margin-top:24px;">数据来源:全局账本季度切片(quarter_calc.py) · 汇总数字由脚本计算,非语言模型心算</div>
 
 </div>
 </body>

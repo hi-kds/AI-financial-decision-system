@@ -1,19 +1,25 @@
-# billweave
+# Billweave
+
+中文 | **[English](docs/README_EN.md)**
 
 > 本地化、可审计的个人财务分析工具，专为微信/支付宝/银行账单格式设计。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**"把你的账单文件扔进去，输出四份标准化报告"**——数据层去重分类 → 计算层算数 → 渲染层出报告。
+BillWeave 是一款专为个人打造的本地化账单管理与分析工具。
+它旨在帮助个人用户轻松整理、清洗并汇总各类零散的账单数据，自动生成清晰直观的财务报告。通过简单的命令行操作，你可以快速完成从原始账单到可视化报表的转换，让个人财务复盘变得简单高效。
 
 ## ✨ 特性
+
+![三级分析系统](docs/三级分析系统.jpg)
 
 | | |
 |---|---|
 | **三层分离** | 数据层 / 计算层 / 呈现层各自独立，中间产物 JSON/CSV 全部可审计 |
 | **跨平台去重** | 自动识别提现/充值配对、银行卡替付结算、退款标记 |
 | **多格式解析** | CSV（GBK）、Excel（含元信息行）、PDF（无表格线文本排版）——自动适配编码和表头位置 |
-| **待确认队列** | 无法归类到默认类别的交易自动进入待确认，逐条确认后永久记住 |
+| **AI 推测打标** | 无关键词匹配的交易由 Agent 推测类别写入待确认队列，用户一键终审批量确认 |
+| **待确认队列** | 无法归类交易进入队列，AI 预填推测类别 + 幂等保留，确认后永久记住 |
 | **100% 本地** | 无外部 API 调用、无网络请求、不上传任何数据 |
 | **Agent 友好** | 天然适配 Hermes/Claude/任意 Agent 编排为 cron 定时任务 |
 
@@ -55,16 +61,13 @@ pip install billweave
 ### 生成合成样例（跳过导入账单）
 
 ```bash
-# 生成虚拟账单用于测试
-python -c "
-import subprocess, sys
-subprocess.run([sys.executable, '-m', 'billweave.sample'], check=True)
-"
+# 生成虚拟账单用于测试（微信/支付宝/招行/余额/债务全套合成数据）
+billweave sample --workspace .
 
 # 跑一遍完整管线
-billweave --workspace . ledger && \
-billweave --workspace . overview && \
-billweave --workspace . render --latest
+billweave ledger --workspace . && \
+billweave overview --workspace . && \
+billweave render --latest --workspace .
 ```
 
 ### 接入真实账单
@@ -113,7 +116,7 @@ billweave render --latest --workspace <路径>
 
 - **个人记账**：把每月导出的账单往里丢，自动生成可视化报告
 - **预算规划**：用 scenario 模块做大额消费前的现金流压力测试
-- **Agent 集成**：配合 Hermes/AutoGPT 等 Agent 设为每周自动账本（cron）
+- **Agent 集成**：配合 Hermes/OpenClaw 等 Agent 设为每周自动账本（cron）
 - **开发者**：参考去重逻辑和解析层代码，处理你自己的财务数据源
 
 ## ⚠️ 免责声明
@@ -130,11 +133,11 @@ MIT License — 随意使用、修改、分发，但请保留版权说明。
 - 新增账单格式解析支持
 - 模板美化
 - 错误修复和性能优化
-- 翻译（英文 README 等）
+- 翻译
 
 ## 👏 特别鸣谢
 
-`billweave` 的诞生离不开开源社区的滋养，特别感谢以下优秀项目：
+Billweave 的诞生离不开开源社区的滋养，特别感谢以下优秀项目：
 
 - **[Jinja2](https://jinja.palletsprojects.com/)** — 提供强大而优雅的报告渲染引擎。
 - **[pdfplumber](https://github.com/jsvine/pdfplumber)** — 解决无表格线 PDF 账单文本排版与分桶解析的关键利器。
