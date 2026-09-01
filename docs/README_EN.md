@@ -12,7 +12,7 @@ Export your statements from WeChat Pay, Alipay, or your bank, drop them into a f
 
 ## ✨ Features
 
-![Three-tier Analysis System](docs/三级分析系统.jpg)
+![Three-tier Analysis System](三级分析系统.jpg)
 
 | | |
 |---|---|
