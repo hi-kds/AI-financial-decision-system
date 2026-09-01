@@ -141,6 +141,7 @@ def main():
     ap.add_argument("--finance-dir", default=None, help="finance 数据根目录")
     ap.add_argument("--currency", default="CNY", help="目标币种（默认 CNY）")
     ap.add_argument("--output", help="输出 JSON 文件路径（默认自动生成到 results/raw/calculation_results/）")
+    ap.add_argument("--year", type=int, default=date.today().year, help="账本年份(默认当前年)")
     args = ap.parse_args()
     if not args.finance_dir:
         args.finance_dir = os.environ.get("BILLWEAVE_DATA_DIR") or "."
@@ -148,16 +149,18 @@ def main():
     today = date.today()
     currency = args.currency.strip().upper()
 
-    # ---- 1. 读取数据层输出 ----
-    global_ledger_csv = os.path.join(args.finance_dir, "results", "raw", "global_bill", "global_ledger.csv")
+    # ---- 1. 读取数据层输出（按年切分） ----
+    global_ledger_csv = os.path.join(args.finance_dir, "results", "raw", "global_bill", f"global_ledger_{args.year}.csv")
     if not os.path.exists(global_ledger_csv):
-        sys.stderr.write(f"错误：找不到数据层输出文件 {global_ledger_csv}，请先运行 global_ledger.py\n")
+        sys.stderr.write(f"错误：找不到数据层输出文件 {global_ledger_csv}，请先运行 billweave ledger\n")
         sys.exit(1)
 
     all_txs = load_global_ledger(global_ledger_csv)
 
-    # ---- 2. 过滤掉待确认交易（财务摘要只统计已确认的） ----
-    confirmed_txs = [t for t in all_txs if not t["待确认"]]
+    # ---- 2. 口径：收支统计含待确认交易（钱已真实发生，不因类别未定而不计入） ----
+    #    待确认交易类别用 AI 推测或"其他"；另保留已确认数供对照
+    confirmed_txs = all_txs
+    n_confirmed = sum(1 for t in all_txs if not t["待确认"])
 
     # ---- 3. 获取本周和上周的日期范围 ----
     ranges = get_week_ranges(today)
@@ -297,12 +300,12 @@ def main():
         "长期未更新账户": stale_accounts,
         "数据来源": {
             "全局账本": global_ledger_csv,
-            "已确认交易数": len(confirmed_txs),
+            "已确认交易数": n_confirmed,
             "本周交易数": len(this_incomes) + len(this_expenses),
             "上周交易数": len(last_incomes) + len(last_expenses),
         },
         "注意": [
-            f"仅统计已确认交易（待确认=否），共 {len(confirmed_txs)} 笔。",
+            f"收支统计含待确认交易（类别未终审，按 AI 推测或'其他'计入），共 {len(confirmed_txs)} 笔；其中已确认 {n_confirmed} 笔。",
             "变化百分比基于上期绝对值计算，若上期为0则显示 ±100% 或 None。",
             "如无显著变化（变动 < 5% 且变动金额 < 10），呈现层可直接显示'本周无显著变化'。",
         ],

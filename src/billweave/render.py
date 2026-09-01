@@ -466,6 +466,8 @@ def main():
                     help="自动从 calculation_results 目录中按修改时间选取最新的 JSON（与 --input 二选一）")
     ap.add_argument("--calc-dir", default=None,
                     help="--latest 模式下扫描的目录（默认 $BILLWEAVE_DATA_DIR/results/raw/calculation_results 或 ./data/...）")
+    ap.add_argument("--finance-dir", default=None,
+                    help="等价于 --calc-dir 的根目录别名（自动拼 results/raw/calculation_results），与其它子命令保持一致")
     ap.add_argument("--extra", default=None,
                     help="附加 JSON 文件，以 _extra 变量注入模板（如全局账本模板需要同时读 summary.json 与 global_ledger.json）")
     ap.add_argument("--template", "-t", required=True,
@@ -482,8 +484,14 @@ def main():
         sys.stderr.write("错误：必须指定 --input 或 --latest\n")
         sys.exit(1)
 
+    # --finance-dir 别名：自动拼出 calc-dir
+    calc_dir = args.calc_dir
+    if calc_dir is None and args.finance_dir:
+        calc_dir = os.path.join(args.finance_dir, "results", "raw", "calculation_results")
+
     if args.latest:
-        calc_dir = args.calc_dir or os.path.join(os.environ.get("BILLWEAVE_DATA_DIR") or "./data", "results", "raw", "calculation_results")
+        if calc_dir is None:
+            calc_dir = os.path.join(os.environ.get("BILLWEAVE_DATA_DIR") or "./data", "results", "raw", "calculation_results")
         template_name = os.path.basename(args.template)
         # 剥掉常见模板后缀(.html.j2/.html/.md.j2/.md/.j2)后查前缀映射
         for suffix in (".html.j2", ".md.j2", ".html", ".md", ".j2"):

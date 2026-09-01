@@ -131,14 +131,15 @@ def load_balances_and_debts(finance_dir, currency):
 def calculate_monthly_expense(txs, currency, window_days=180):
     """
     月均支出：优先取最近 window_days 天（默认180天≈6个月，与设计文档"安全线基于过去6个月固定支出"一致）
-    内已确认支出的日均值 × 30.44；若窗口内无支出，回退到全部历史。
+    内支出的日均值 × 30.44；若窗口内无支出，回退到全部历史。
+    口径：含待确认交易（钱已真实发生，类别未定不影响金额）。
     返回 None 表示数据不足（无任何历史支出）。
     """
     today = date.today()
     cutoff = today - timedelta(days=window_days)
     expenses = []  # (日期, 支出金额绝对值)
     for tx in txs:
-        if tx["待确认"] or tx["币种"] != currency or tx["金额"] >= 0:
+        if tx["币种"] != currency or tx["金额"] >= 0:
             continue
         try:
             d = datetime.strptime(tx["日期"], "%Y-%m-%d").date()
@@ -250,6 +251,7 @@ def main():
     ap.add_argument("--finance-dir", default=None, help="finance 数据根目录")
     ap.add_argument("--currency", default="CNY", help="目标币种（默认 CNY）")
     ap.add_argument("--output", help="输出 JSON 文件路径（默认自动生成到 results/raw/calculation_results/）")
+    ap.add_argument("--year", type=int, default=date.today().year, help="账本年份(默认当前年)")
     args = ap.parse_args()
     if not args.finance_dir:
         args.finance_dir = os.environ.get("BILLWEAVE_DATA_DIR") or "."
@@ -258,10 +260,10 @@ def main():
     currency = args.currency.strip().upper()
     three_months_later = today + timedelta(days=90)
 
-    # ---- 1. 读取数据层输出的全局账本 ----
-    global_ledger_csv = os.path.join(args.finance_dir, "results", "raw", "global_bill", "global_ledger.csv")
+    # ---- 1. 读取数据层输出的全局账本（按年切分） ----
+    global_ledger_csv = os.path.join(args.finance_dir, "results", "raw", "global_bill", f"global_ledger_{args.year}.csv")
     if not os.path.exists(global_ledger_csv):
-        sys.stderr.write(f"错误：找不到数据层输出文件 {global_ledger_csv}，请先运行 global_ledger.py\n")
+        sys.stderr.write(f"错误：找不到数据层输出文件 {global_ledger_csv}，请先运行 billweave ledger\n")
         sys.exit(1)
 
     all_txs = load_global_ledger(global_ledger_csv)

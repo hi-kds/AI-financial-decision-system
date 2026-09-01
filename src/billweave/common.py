@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-finance_common.py —— 财务数据共享读取层(compare_scenarios.py / global_ledger.py 共用)
+common.py —— 财务数据共享读取层(calc_scenario.py / ledger.py 共用)
 
 职责:
   1. 递归扫描 balance/、bills/、debt/ 下所有支持格式的文件(.csv/.xlsx/.xlsm/.pdf)
@@ -357,8 +357,22 @@ def get_field(row, field):
     return ""
 
 
-def classify_income_expense(row):
-    """判断收支:优先'收/支'列值,其次金额正负号。返回 income/expense/neutral/unknown。"""
+def _file_amount_signed(rows):
+    """判断该账单文件金额列是否带符号(存在负数)——银行流水(如招商银行)金额带符号,
+    微信/支付宝金额全为正。用于类型列读不到时的兜底方式:
+    带符号→按金额符号判,全为正→归中性。"""
+    for r in rows:
+        a = to_number(get_field(r, "金额"))
+        if a is not None and a < 0:
+            return True
+    return False
+
+
+def classify_income_expense(row, amount_signed=False):
+    """判断收支:优先'收/支'列值。类型列读不到时,若金额列带符号(有正有负,如银行流水)则按金额符号判;
+    金额列全为正(如微信/支付宝)则归中性(不计收支)。返回 income/expense/neutral。
+    注: '交易关闭'(未成交)交由 ledger 去重阶段按优先级处理,不在此提前标中性,
+    以免掩盖原始收支方向(避免退款2匹配不到)。"""
     typ = clean(get_field(row, "类型")).lower()
     if any(w in typ for w in NEUTRAL_WORDS):
         return "neutral"  # 不计收支:先于收支判断,避免被误判
@@ -366,13 +380,15 @@ def classify_income_expense(row):
         return "expense"
     if any(w in typ for w in INCOME_WORDS):
         return "income"
-    amt = to_number(get_field(row, "金额"))
-    if amt is not None and amt != 0:
-        return "expense" if amt < 0 else "income"
-    return "unknown"
+    # 类型列无法判断 → 按金额列符号分布决策
+    if amount_signed:
+        amt = to_number(get_field(row, "金额"))
+        if amt is not None and amt != 0:
+            return "expense" if amt < 0 else "income"
+    return "neutral"
 
 
-def extract_transaction(path, row, platform):
+def extract_transaction(path, row, platform, amount_signed=False):
     """把一行原始记录标准化为统一交易 dict。解析失败返回 None。"""
     date_s = normalize_date(get_field(row, "日期"))
     amt = to_number(get_field(row, "金额"))
@@ -385,16 +401,17 @@ def extract_transaction(path, row, platform):
             or re.fullmatch(r"[\dA-Za-z/.-]{12,}", item)):
         item = peer
     pay_method = clean(get_field(row, "支付方式"))
-    ie = classify_income_expense(row)
+    ie = classify_income_expense(row, amount_signed)
     base = {
-        "日期": date_s, "平台": platform, "项目": item, "金额": amt,
+        "日期": date_s, "时间": clean(get_field(row, "日期")), "平台": platform,
+        "项目": item, "金额": amt,
         "币种": clean(get_field(row, "币种")).upper() or "CNY",
         "状态": clean(get_field(row, "状态")),
         "对方": peer, "备注": peer, "支付方式": pay_method,
         "来源": os.path.basename(path),
     }
     if ie == "neutral":
-        # 不计收支(余额宝/信用卡还款等):不录入账本,由 global_ledger.py 剔除
+        # 不计收支(余额宝/信用卡还款等):不录入账本,由 ledger.py 剔除
         base["类型"] = "neutral"
         return base
     if ie == "expense" and amt > 0:
@@ -419,8 +436,9 @@ def load_transactions(finance_dir, subdir="bills", platform_hint=None):
         # 平台:文件所在的第一级子目录名(如 bills/微信/2026.08.30/xxx → 微信)
         parts = rel.split(os.sep)
         platform = parts[0] if len(parts) > 1 and parts[0] not in ("", ".") else platform_hint or "未知平台"
+        amount_signed = _file_amount_signed(rows)
         for r in rows:
-            tx = extract_transaction(path, r, platform)
+            tx = extract_transaction(path, r, platform, amount_signed)
             if tx:
                 txs.append(tx)
     return txs

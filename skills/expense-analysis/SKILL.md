@@ -1,11 +1,11 @@
 ---
 name: expense-analysis
-description: 用户考虑重大支出/大额消费/要不要付款/怎么付款时使用。先问4个前提,运行计算层脚本,调用呈现层生成四方案分析报告。
-version: 3.0.0
+description: 用户考虑重大支出/大额消费/要不要付款/怎么付款时使用。先问4个前提,运行计算层脚本,调用呈现层生成四方案分析报告（按年账本）。
+version: 3.1.0
 license: MIT
 metadata:
-  tags: [finance, 财务, 支出分析, 方案对比]
-  related_skills: [finance-overview, weekly-finance-digest, global-ledger]
+  tags: [finance, 财务, 支出分析, 方案对比, 按年]
+  related_skills: [finance-overview, weekly-finance-digest, global-ledger, financial-export-parsing]
 ---
 
 # 重大支出分析
@@ -38,7 +38,7 @@ metadata:
 
 ### 第 1 步：确保数据层已就绪
 
-若 `results/raw/global_bill/global_ledger.csv` 不存在或账单有更新，先运行：
+若 `results/raw/global_bill/global_ledger_{year}.csv` 不存在或账单有更新，先运行：
 
 ```bash
 billweave ledger --workspace <工作目录>
@@ -49,10 +49,10 @@ billweave ledger --workspace <工作目录>
 ```bash
 billweave scenario \
   --amount <金额> --currency <币种> --pay-date <YYYY-MM-DD> --safety-line <安全线> \
-  --workspace <工作目录>
+  --workspace <工作目录> --year <年>
 ```
 
-结果保存到 `results/raw/calculation_results/scenario_*.json`。
+`--year` 默认当前年。结果保存到 `results/raw/calculation_results/scenario_{year}_*.json`。
 **所有数字引用 JSON，LLM 不做任何计算。**
 
 ### 第 3 步：调用呈现层生成报告
@@ -60,6 +60,7 @@ billweave scenario \
 ```bash
 billweave render \
   --latest \
+  --finance-dir <工作目录> \
   --template templates/重大支出分析.md.j2 \
   --output reports/重大支出分析_$(date +%Y%m%d)
 ```
@@ -82,3 +83,4 @@ billweave render \
 
 - 必须等数据层生成 CSV 后再跑计算层。
 - 金额一律以脚本输出为准，禁止 LLM 心算。
+- 新接入账单时先跑 `billweave inspect-match --workspace <工作目录>` 排查表头识别。

@@ -1,39 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-global_ledger.py —— 数据层：清洗、去重、分类、输出干净账本
+ledger.py —— 数据层：清洗、去重、分类、输出干净账本
 
 职责（纯数据层）：
   1. 递归读取 bills/ 下所有平台账单（微信/支付宝/银行等）
-  2. 执行去重规则（平台互转、跨平台结算、不计收支）
+  2. 按优先级执行去重规则（退款1>退款2>平台互转>跨平台结算>交易关闭>资金移动兜底）
   3. 自动分类（关键词），不确定的标记为待确认
-  4. 输出标准化 CSV 和 JSON 到 results/raw/global_bill/
+  4. 按年输出标准化 CSV 和 JSON 到 results/raw/global_bill/
   5. 支持 --confirm 手动指定待确认交易的类别
   6. 不生成任何 Markdown 或 HTML（呈现层职责）
 
 用法：
-  python global_ledger.py --finance-dir D:/Hermes/finance [--confirm "2026-08-31|12.34|餐饮"]
+  python -m billweave.ledger --finance-dir . [--confirm "2026-08-31|12.34|餐饮"]
 
-输出：
-  results/raw/global_bill/global_ledger.csv
-  results/raw/global_bill/global_ledger.json
-  results/raw/global_bill/removed_records.csv
-  results/raw/global_bill/pending_queue.csv
-  results/raw/global_bill/summary.json
+输出（按年切分，文件名带年份后缀）：
+  results/raw/global_bill/global_ledger_{year}.csv
+  results/raw/global_bill/global_ledger_{year}.json
+  results/raw/global_bill/removed_records_{year}.csv
+  results/raw/global_bill/pending_queue_{year}.csv
+  results/raw/global_bill/summary_{year}.json
+
+旧版无年份产物（global_ledger.csv 等）首次运行时会被自动归档到
+results/_旧版/<时间戳>/，升级用户不会丢数据。
 """
 
 import argparse
 import csv
+import glob
 import json
 import os
 import re
+import shutil
 import sys
+import time
 from collections import defaultdict
 from datetime import date
 
-# 导入共享工具（finance_common 位于 scripts/lib/，相对本文件上两级）
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
-import finance_common as fc
+from billweave import common as fc
 
 # 支出类别关键词（顺序即优先级）
 CATEGORY_RULES = [
@@ -62,8 +66,13 @@ INCOME_WORDS = ("工资", "红包", "收款", "汇入", "转入", "网联收款"
 
 # 平台互转识别关键词
 PLATFORM_TRANSFER_WORDS = ("提现", "充值")
-PLATFORM_TRANSFER_TOLERANCE = 1.01
+# 提现匹配容差 0.25%；手续费=较大(微信/支付宝)-较小(银行),记为支出
+PLATFORM_TRANSFER_TOLERANCE = 0.0025
 APP_PLATFORMS = ("微信", "支付宝")
+
+# 平台互转锚点: 微信/支付宝 中性 且 对方/项目/支付方式 指向银行卡(提现到卡/充值/退款回卡)
+# 用于识别"钱在不同平台间搬家"的锚点,配对外部才不误配(不带银行卡指向的中性,如账户存取/红包,不参与)
+BANK_KEYWORDS = ("银行", "储蓄卡", "信用卡", "借记卡", "招商", "招行", "工行", "建行", "中行", "农行", "农商", "邮政")
 
 # 确认记录文件（存储用户对待确认交易的分类）
 CONFIRM_FILE = "confirm_records.json"
@@ -71,6 +80,9 @@ CONFIRM_FILE = "confirm_records.json"
 
 def classify(tx):
     """返回 (类别, 是否有把握)"""
+    # 平台互转手续费: 固定归类"手续费", 不再走待确认
+    if (tx.get("项目") or "") == "平台互转手续费":
+        return "手续费", True
     text = ((tx["项目"] or "") + " " + (tx.get("对方") or "") + " " + (tx.get("状态") or "")).lower()
     if tx["类型"] == "income" or any(w in text for w in INCOME_WORDS):
         return "收入", True
@@ -80,61 +92,136 @@ def classify(tx):
     return "其他", False
 
 
-def match_platform_transfers(txs):
-    """平台互转去重，返回 (保留的交易, 生成的手续费交易, 被剔除的记录)"""
+def _is_transfer_anchor(t):
+    """平台互转锚点: 微信/支付宝 且 中性(提现/充值/退款回卡等资产移动)。
+    不限定银行卡指向——靠'当天银行端有对应金额'来配对,涵盖支付宝充值逻辑。
+    交易关闭的中性交易(未真实成交)不参与配对,其本身按不计收支剔除。"""
+    if t["平台"] not in APP_PLATFORMS or t["类型"] != "neutral":
+        return False
+    if "交易关闭" in (t.get("状态") or ""):
+        return False
+    return True
+
+
+def match_alipay_refunds(txs):
+    """支付宝退款去重(退款1+退款2 共享原始交易池——退款2 需判断"其后"的同额不计收支,
+    故不能把已被退款1剔除的交易从池中拿走)。
+    退款1: 支付宝 中性(不计收支) + 当天银行卡等额收入 → 剔双方
+    退款2: 支付宝 支出 + 当天银行卡等额支出 + 其后≤14天内有一笔同额支付宝不计收支
+          (同日须时间戳更晚; 必须是"不计收支"类型) → 剔双方
+    返回 (保留的交易, 剔除记录)。"""
     by_date = defaultdict(list)
     for t in txs:
         by_date[t["日期"]].append(t)
+    ali_all = [t for t in txs if t["平台"] == "支付宝"]
+    ali_neutral_all = [t for t in ali_all if t["类型"] == "neutral"]
+    removed_ids, removed = set(), []
 
-    matched_ids, fee_txs, removed = set(), [], []
+    def _d(s):
+        try:
+            return date.fromisoformat(s)
+        except (TypeError, ValueError):
+            return None
+
+    # --- 退款1: 支付宝中性 ↔ 当天银行卡等额收入 ---
     for d, cands in by_date.items():
-        flagged = []
-        for t in cands:
-            text = (t["项目"] or "") + (t.get("对方") or "")
-            if t["平台"] in APP_PLATFORMS and any(w in text for w in PLATFORM_TRANSFER_WORDS):
-                flagged.append(t)
-        if not flagged:
-            continue
-        incomes_all = [t for t in cands if t["类型"] == "income"]
-        expenses_all = [t for t in cands if t["类型"] == "expense"]
-        for anchor in flagged:
-            if id(anchor) in matched_ids:
+        bank = [t for t in cands if t["平台"] not in APP_PLATFORMS]
+        for a in [t for t in cands if t["平台"] == "支付宝" and t["类型"] == "neutral"]:
+            if id(a) in removed_ids:
                 continue
-            other_side = expenses_all if anchor["类型"] == "income" else incomes_all
-            best, best_diff = None, None
-            for cand in other_side:
-                if id(cand) in matched_ids or cand["平台"] == anchor["平台"]:
+            for c in bank:
+                if id(c) in removed_ids or c["类型"] != "income":
                     continue
-                big = max(abs(anchor["金额"]), abs(cand["金额"]))
-                small = min(abs(anchor["金额"]), abs(cand["金额"]))
-                if small <= 0 or big > small * PLATFORM_TRANSFER_TOLERANCE:
-                    continue
-                diff = round(big - small, 2)
-                if best_diff is None or diff < best_diff:
-                    best, best_diff = cand, diff
-            if best is not None:
-                matched_ids.add(id(anchor))
-                matched_ids.add(id(best))
-                inc = anchor if anchor["类型"] == "income" else best
-                exp = best if anchor["类型"] == "income" else anchor
-                reason = f"平台互转({exp['平台']}↔{inc['平台']},提现/充值),按差额记手续费"
-                removed.append({**inc, "剔除原因": reason})
-                removed.append({**exp, "剔除原因": reason})
-                if best_diff >= 0.01:
-                    fee_txs.append({
-                        "日期": d,
-                        "平台": f"{exp['平台']}/{inc['平台']}",
-                        "类型": "expense",
-                        "项目": "平台互转手续费",
-                        "金额": -best_diff,
-                        "币种": inc["币种"],
-                        "对方": "",
-                        "备注": "",
-                        "支付方式": "",
-                        "状态": "",
-                    })
-    kept = [t for t in txs if id(t) not in matched_ids]
-    return kept, fee_txs, removed
+                if abs(c["金额"]) == abs(a["金额"]):
+                    removed_ids.add(id(a)); removed_ids.add(id(c))
+                    reason = "支付宝退款1(支付宝端↔银行卡侧等额收入),剔双方"
+                    removed.append({**a, "剔除原因": reason})
+                    removed.append({**c, "剔除原因": reason})
+                    break
+
+    # --- 退款2: 支付宝支出 + 当天银行卡等额支出 + 其后≤14天有同额支付宝不计收支 ---
+    for a in [t for t in ali_all if t["类型"] == "expense"]:
+        if id(a) in removed_ids:
+            continue
+        a_date = _d(a.get("日期") or "")
+        if a_date is None:
+            continue
+        later_neutral = []
+        for n in ali_neutral_all:
+            if abs(n["金额"]) != abs(a["金额"]):
+                continue
+            n_date = _d(n.get("日期") or "")
+            if n_date is None:
+                continue
+            diff = (n_date - a_date).days
+            if diff < 0 or diff > 14:
+                continue
+            if diff == 0 and (n.get("时间") or "") <= (a.get("时间") or ""):
+                continue  # 同日必须时间更晚
+            later_neutral.append(n)
+        if not later_neutral:
+            continue  # 其后≤14天无同额不计收支(退款) → 不构成退款2
+        for c in by_date.get(a["日期"], []):
+            if c["平台"] in APP_PLATFORMS:
+                continue
+            if id(c) in removed_ids or c["类型"] != "expense":
+                continue
+            if abs(c["金额"]) == abs(a["金额"]):
+                removed_ids.add(id(a)); removed_ids.add(id(c))
+                reason = "支付宝退款2(支付宝支出↔银行卡等额支出,其后≤14天有同额不计收支),剔双方"
+                removed.append({**a, "剔除原因": reason})
+                removed.append({**c, "剔除原因": reason})
+                break
+
+    kept = [t for t in txs if id(t) not in removed_ids]
+    return kept, removed
+
+
+def match_platform_transfers(txs):
+    """平台互转去重: 微信/支付宝端"中性"锚点 ↔ 当天银行端对应交易,排除多记。
+    提现 → 银行端收入(金额差≤0.25%,手续费=较大-较小记支出); 充值 → 银行端支出(金额完全相等,无费)。
+    全局贪心匹配(差额最小优先,income略优),避免先到先得错配。
+    返回 (保留的交易, 手续费交易, 被剔除的银行端记录)。未配对锚点仍按不计收支由外部剔除。"""
+    by_date = defaultdict(list)
+    for t in txs:
+        by_date[t["日期"]].append(t)
+    anchors = [a for a in txs if _is_transfer_anchor(a)]
+    if not anchors:
+        return txs, [], []
+
+    # 回溯: 不加"提现/充值"方向判定。锚点=微信/支付宝中性, 双向匹配银行端
+    # (银行收入→0.25%容差+差额费; 银行支出→完全相等无费), 方向由银行端类型决定
+    candidates = []
+    for a in anchors:
+        for c in by_date.get(a["日期"], []):
+            if c["平台"] in APP_PLATFORMS:
+                continue
+            big = max(abs(a["金额"]), abs(c["金额"]))
+            small = min(abs(a["金额"]), abs(c["金额"]))
+            if c["类型"] == "income":
+                if small > 0 and (big - small) <= small * PLATFORM_TRANSFER_TOLERANCE:
+                    fee = round(big - small, 2)
+                    candidates.append((a, c, fee, "income"))
+            else:
+                if abs(c["金额"]) == abs(a["金额"]):
+                    candidates.append((a, c, 0.0, "expense"))
+
+    candidates.sort(key=lambda x: (x[2], 0 if x[3] == "income" else 1, x[0]["金额"]))
+    matched_anchor_ids, matched_bank_ids = set(), set()
+    fee_txs, removed_bank = [], []
+    for a, c, fee, direction in candidates:
+        if id(a) in matched_anchor_ids or id(c) in matched_bank_ids:
+            continue
+        matched_anchor_ids.add(id(a)); matched_bank_ids.add(id(c))
+        removed_bank.append({**c, "剔除原因": f"平台互转({a['平台']}端↔银行端{c['平台']},忽略银行{'收入' if direction=='income' else '支出'}不计收支)"})
+        if direction == "income" and fee >= 0.01:
+            fee_txs.append({
+                "日期": a["日期"], "平台": f"{a['平台']}/{c['平台']}", "类型": "expense",
+                "项目": "平台互转手续费", "金额": -fee, "币种": a["币种"] or c["币种"],
+                "对方": "", "备注": "", "支付方式": "", "状态": "",
+            })
+    kept = [t for t in txs if id(t) not in matched_bank_ids]
+    return kept, fee_txs, removed_bank
 
 
 def match_cross_platform_settlement(txs):
@@ -174,26 +261,39 @@ def save_confirm_records(confirm_dir, records):
 
 
 def build_ledger(finance_dir, output_dir, confirm_args=None):
-    """主流程：清洗→去重→分类→输出数据文件"""
+    """主流程：清洗→去重→分类→按年输出数据文件"""
     today = date.today().isoformat()
     confirm_args = confirm_args or []
 
     # 1. 读取所有账单
     txs = fc.load_transactions(finance_dir, "bills")
 
-    # 2. 剔除不计收支（neutral）
+    # 2. 按优先级去重: 退款1 > 退款2 > 平台互转 > 跨平台结算 > 交易关闭(资金移动兜底)
+    removed = []
+
+    # 优先级1+2: 支付宝退款1/退款2 (共享原始池, 退款2要求"其后有同额不计收支")
+    txs, rem_refund = match_alipay_refunds(txs)
+    removed.extend(rem_refund)
+
+    # 优先级3: 平台互转 (微信/支付宝中性锚点 ↔ 银行端; 手续费=较大-较小)
+    txs, fee_txs, rem_pt = match_platform_transfers(txs)
+    removed.extend(rem_pt)
+
+    # 优先级4: 跨平台结算 (微信/支付宝用银行卡付款 + 银行侧重复, 剔银行侧)
+    txs, rem_cs = match_cross_platform_settlement(txs)
+    removed.extend(rem_cs)
+
+    # 优先级5: 交易关闭 (未成交 → 中性剔除)
+    closed = [t for t in txs if "交易关闭" in (t.get("状态") or "")]
+    removed.extend({**t, "剔除原因": "交易关闭(未成交),不计收支"} for t in closed)
+    txs = [t for t in txs if "交易关闭" not in (t.get("状态") or "")]
+
+    # 优先级6: 其余中性(资金移动/不计收支) 剔除
+    neut = [t for t in txs if t["类型"] == "neutral"]
+    removed.extend({**t, "剔除原因": "不计收支(不录入账本)"} for t in neut)
     active = [t for t in txs if t["类型"] != "neutral"]
-    removed = [{**t, "剔除原因": "不计收支(不录入账本)"} for t in txs if t["类型"] == "neutral"]
 
-    # 3. 去重规则一：平台互转
-    active, fee_txs, removed_transfer = match_platform_transfers(active)
-    removed.extend(removed_transfer)
-
-    # 4. 去重规则二：跨平台结算
-    active, removed_settle = match_cross_platform_settlement(active)
-    removed.extend(removed_settle)
-
-    # 5. 添加手续费交易（视为普通交易）
+    # 手续费交易视为普通交易
     active.extend(fee_txs)
 
     # 6. 加载已有的确认记录
@@ -281,168 +381,185 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
         if k in ai_map:
             tx["类别"] = ai_map[k]
 
-    # 12. 输出 CSV（全量交易）
-    csv_path = os.path.join(output_dir, "global_ledger.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-        fieldnames = ["日期", "平台", "类别", "收支类型", "金额", "币种", "状态", "备注", "待确认"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for tx in sorted(all_txs_out, key=lambda x: x["日期"]):
-            writer.writerow({
-                "日期": tx["日期"],
-                "平台": tx["平台"],
-                "类别": tx["类别"],
-                "收支类型": "支出" if tx["金额"] < 0 else "收入",
-                "金额": tx["金额"],
-                "币种": tx["币种"],
-                "状态": tx.get("状态", ""),
-                "备注": tx.get("项目", ""),
-                "待确认": "是" if tx.get("待确认", False) else "否",
-            })
+    # 12. 按年分组输出（一年一个全局账本）
+    by_year = defaultdict(list)
+    for tx in all_txs_out:
+        by_year[tx["日期"][:4]].append(tx)
+    by_year_kept = defaultdict(list)
+    for tx in final_kept:
+        by_year_kept[tx["日期"][:4]].append(tx)
+    by_year_pending = defaultdict(list)
+    for tx in pending:
+        by_year_pending[tx["日期"][:4]].append(tx)
+    by_year_removed = defaultdict(list)
+    for r in removed:
+        by_year_removed[r["日期"][:4]].append(r)
 
-    # 13. 输出 JSON（全量交易）
-    json_path = os.path.join(output_dir, "global_ledger.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(all_txs_out, f, ensure_ascii=False, indent=2, default=str)
-
-    # 14. 输出剔除记录（用于追溯）
-    removed_csv = os.path.join(output_dir, "removed_records.csv")
-    with open(removed_csv, "w", newline="", encoding="utf-8-sig") as f:
-        fieldnames = ["日期", "平台", "金额", "币种", "剔除原因", "项目"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for r in removed:
-            writer.writerow({
-                "日期": r["日期"],
-                "平台": r["平台"],
-                "金额": r["金额"],
-                "币种": r["币种"],
-                "剔除原因": r["剔除原因"],
-                "项目": r.get("项目", ""),
-            })
-
-    # 15. 输出待确认队列（单独 CSV）
-    # 列"AI推测类别"由 Agent 填充（AI 依据商户名/金额/日期推测）,用户终审后
-    # 由 --confirm 固化到 confirm_records.json;脚本重跑不会覆盖该列内容。
-    pending_csv = os.path.join(output_dir, "pending_queue.csv")
-    fieldnames = ["日期", "平台", "金额", "币种", "项目", "AI推测类别", "当前类别(待确认)"]
-    rows_out = []
-    for tx in sorted(pending, key=lambda x: x["日期"]):
-        rows_out.append({
-            "日期": tx["日期"],
-            "平台": tx["平台"],
-            "金额": tx["金额"],
-            "币种": tx["币种"],
-            "项目": tx.get("项目", ""),
-            "AI推测类别": tx.get("AI推测类别", ""),   # Agent 填;脚本重跑保留
-            "当前类别(待确认)": tx["类别"],            # 目前是"其他"或默认
-        })
-    # 读回旧的 AI 推测（脚本幂等:不因重跑丢失 AI 推测）
-    if os.path.exists(pending_csv):
+    # 迁移: 读旧全局 pending_queue.csv 的 AI 推测(首次按年运行时保留)
+    legacy_ai = {}
+    legacy_pend = os.path.join(output_dir, "pending_queue.csv")
+    if os.path.exists(legacy_pend):
         try:
-            with open(pending_csv, newline="", encoding="utf-8-sig") as f:
-                old = {f"{r['日期']}|{r['平台']}|{r['金额']}": r.get("AI推测类别", "")
-                       for r in csv.DictReader(f)}
-            for r in rows_out:
-                k = f"{r['日期']}|{r['平台']}|{r['金额']}"
-                if k in old and old[k]:
-                    r["AI推测类别"] = old[k]
+            with open(legacy_pend, newline="", encoding="utf-8-sig") as f:
+                legacy_ai = {f"{r['日期']}|{r['平台']}|{r['金额']}": r.get("AI推测类别", "")
+                             for r in csv.DictReader(f)}
         except Exception:
             pass
-    with open(pending_csv, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+
+    csv_fields = ["日期", "平台", "类别", "收支类型", "金额", "币种", "状态", "备注", "待确认"]
+    years = sorted(by_year.keys())
+    for year in years:
+        txs_y = by_year[year]
+        kept_y = by_year_kept.get(year, [])
+        pend_y = by_year_pending.get(year, [])
+        rem_y = by_year_removed.get(year, [])
+
+        # 12a. 交易 CSV
+        csv_path = os.path.join(output_dir, f"global_ledger_{year}.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=csv_fields)
+            writer.writeheader()
+            for tx in sorted(txs_y, key=lambda x: x["日期"]):
+                writer.writerow({
+                    "日期": tx["日期"], "平台": tx["平台"], "类别": tx["类别"],
+                    "收支类型": "支出" if tx["金额"] < 0 else "收入",
+                    "金额": tx["金额"], "币种": tx["币种"],
+                    "状态": tx.get("状态", ""), "备注": tx.get("项目", ""),
+                    "待确认": "是" if tx.get("待确认", False) else "否",
+                })
+
+        # 12b. 交易 JSON
+        with open(os.path.join(output_dir, f"global_ledger_{year}.json"), "w", encoding="utf-8") as f:
+            json.dump(txs_y, f, ensure_ascii=False, indent=2, default=str)
+
+        # 12c. 剔除记录
+        with open(os.path.join(output_dir, f"removed_records_{year}.csv"), "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=["日期", "平台", "金额", "币种", "剔除原因", "项目"])
+            writer.writeheader()
+            for r in rem_y:
+                writer.writerow({"日期": r["日期"], "平台": r["平台"], "金额": r["金额"],
+                                 "币种": r["币种"], "剔除原因": r["剔除原因"], "项目": r.get("项目", "")})
+
+        # 12d. 待确认队列(带 AI推测列, 幂等保留)
+        pend_fields = ["日期", "平台", "金额", "币种", "项目", "AI推测类别", "当前类别(待确认)"]
+        pend_csv = os.path.join(output_dir, f"pending_queue_{year}.csv")
+        rows_out = []
+        for tx in sorted(pend_y, key=lambda x: x["日期"]):
+            rows_out.append({"日期": tx["日期"], "平台": tx["平台"], "金额": tx["金额"],
+                             "币种": tx["币种"], "项目": tx.get("项目", ""),
+                             "AI推测类别": tx.get("AI推测类别", ""), "当前类别(待确认)": tx["类别"]})
+        old_ai = dict(legacy_ai)
+        if os.path.exists(pend_csv):
+            try:
+                with open(pend_csv, newline="", encoding="utf-8-sig") as f:
+                    old_ai.update({f"{r['日期']}|{r['平台']}|{r['金额']}": r.get("AI推测类别", "")
+                                   for r in csv.DictReader(f)})
+            except Exception:
+                pass
         for r in rows_out:
-            writer.writerow(r)
+            k = f"{r['日期']}|{r['平台']}|{r['金额']}"
+            if k in old_ai and old_ai[k]:
+                r["AI推测类别"] = old_ai[k]
+        with open(pend_csv, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=pend_fields)
+            writer.writeheader()
+            for r in rows_out:
+                writer.writerow(r)
 
-    # 16. 生成汇总统计 JSON
-    # 注意：汇总只统计已确认交易（final_kept），待确认交易不计入收支
-    summary = {
-        "生成日期": today,
-        "总交易数（去重后，含待确认）": len(all_txs_out),
-        "已确认交易数": len(final_kept),
-        "被剔除数": len(removed),
-        "待确认数": len(pending),
-        "总收入": sum(t["金额"] for t in final_kept if t["金额"] > 0),
-        "总支出": sum(-t["金额"] for t in final_kept if t["金额"] < 0),
-        "净结余": sum(t["金额"] for t in final_kept),
-        "按类别汇总": {},
-        "按平台汇总": {},
-    }
-    # 按类别
-    cat_net = defaultdict(float)
-    cat_cnt = defaultdict(int)
-    for tx in final_kept:
-        cat = tx["类别"]
-        cat_net[cat] += tx["金额"]
-        cat_cnt[cat] += 1
-    summary["按类别汇总"] = {k: {"净额": v, "笔数": cat_cnt[k]} for k, v in cat_net.items()}
-    # 按平台
-    plat_net = defaultdict(float)
-    plat_cnt = defaultdict(int)
-    for tx in final_kept:
-        p = tx["平台"]
-        plat_net[p] += tx["金额"]
-        plat_cnt[p] += 1
-    summary["按平台汇总"] = {p: {"净额": v, "笔数": plat_cnt[p]} for p, v in plat_net.items()}
-
-    # 16.1 支出类别占比（供环形图使用：单类占比 + 累计占比断点；前5大 + 其余合并"其他"）
-    exp_cats = [(k, abs(v)) for k, v in cat_net.items() if v < 0]
-    exp_cats.sort(key=lambda x: -x[1])
-    total_exp = sum(a for _, a in exp_cats)
-    pct_items = []
-    if total_exp > 0:
-        top = exp_cats[:5]
-        rest = sum(a for _, a in exp_cats[5:])
-        if rest > 0.005:
-            top.append(("其他", rest))
-        cum = 0.0
-        for name, amt in top:
-            p = round(amt / total_exp * 100, 1)
-            cum += p
-            pct_items.append({"类别": name, "金额": round(amt, 2), "占比": p, "累计占比": round(cum, 1)})
-    summary["支出类别占比"] = pct_items
-
-    # 16.2 已剔除记录（供呈现层"三、已剔除"表格直接使用）
-    summary["已剔除记录"] = [
-        {
-            "日期": r["日期"],
-            "平台": r["平台"],
-            "金额": r["金额"],
-            "币种": r["币种"],
-            "原因": r["剔除原因"],
-            "项目": r.get("项目", ""),
+        # 12e. 年度汇总 (口径含待确认 + 已确认对照)
+        income_all = sum(t["金额"] for t in txs_y if t["金额"] > 0)
+        expense_all = sum(-t["金额"] for t in txs_y if t["金额"] < 0)
+        income_conf = sum(t["金额"] for t in kept_y if t["金额"] > 0)
+        expense_conf = sum(-t["金额"] for t in kept_y if t["金额"] < 0)
+        summary = {
+            "年份": year,
+            "生成日期": today,
+            "总交易数（去重后，含待确认）": len(txs_y),
+            "已确认交易数": len(kept_y),
+            "被剔除数": len(rem_y),
+            "待确认数": len(pend_y),
+            "总收入": round(income_all, 2),
+            "总支出": round(expense_all, 2),
+            "净结余": round(income_all - expense_all, 2),
+            "已确认总收入": round(income_conf, 2),
+            "已确认总支出": round(expense_conf, 2),
+            "已确认净结余": round(income_conf - expense_conf, 2),
+            "按类别汇总": {},
+            "按平台汇总": {},
         }
-        for r in removed
-    ]
+        cat_net = defaultdict(float); cat_cnt = defaultdict(int)
+        for tx in txs_y:
+            cat_net[tx["类别"]] += tx["金额"]; cat_cnt[tx["类别"]] += 1
+        summary["按类别汇总"] = {k: {"净额": v, "笔数": cat_cnt[k]} for k, v in cat_net.items()}
+        plat_net = defaultdict(float); plat_cnt = defaultdict(int)
+        for tx in txs_y:
+            plat_net[tx["平台"]] += tx["金额"]; plat_cnt[tx["平台"]] += 1
+        summary["按平台汇总"] = {p: {"净额": v, "笔数": plat_cnt[p]} for p, v in plat_net.items()}
+        exp_cats = sorted(((k, abs(v)) for k, v in cat_net.items() if v < 0), key=lambda x: -x[1])
+        total_exp = sum(a for _, a in exp_cats)
+        pct_items = []
+        if total_exp > 0:
+            top = exp_cats[:5]
+            rest = sum(a for _, a in exp_cats[5:])
+            if rest > 0.005:
+                top.append(("其余", rest))  # 合并名用"其余"，避免与真实"其他"类别重名
+            cum = 0.0
+            for name, amt in top:
+                p = round(amt / total_exp * 100, 1); cum += p
+                pct_items.append({"类别": name, "金额": round(amt, 2), "占比": p, "累计占比": round(cum, 1)})
+        summary["支出类别占比"] = pct_items
+        summary["已剔除记录"] = [
+            {"日期": r["日期"], "平台": r["平台"], "金额": r["金额"], "币种": r["币种"],
+             "原因": r["剔除原因"], "项目": r.get("项目", "")} for r in rem_y
+        ]
+        with open(os.path.join(output_dir, f"summary_{year}.json"), "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    summary_json = os.path.join(output_dir, "summary.json")
-    with open(summary_json, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-
-    # 17. 输出简要信息到 stderr（供用户查看）
-    print(f"✅ 数据层处理完成", file=sys.stderr)
-    print(f"   - 交易总数（去重后，含待确认）: {len(all_txs_out)}", file=sys.stderr)
-    print(f"   - 已确认交易: {len(final_kept)}", file=sys.stderr)
-    print(f"   - 待确认交易: {len(pending)}", file=sys.stderr)
-    print(f"   - 已剔除记录: {len(removed)}", file=sys.stderr)
+    # 17. 输出简要信息
+    print("✅ 数据层处理完成（按年输出）", file=sys.stderr)
+    for year in years:
+        print(f"   - {year} 年账本: {len(by_year[year])} 笔 | 已确认 {len(by_year_kept.get(year, []))} | 待确认 {len(by_year_pending.get(year, []))} | 剔除 {len(by_year_removed.get(year, []))}", file=sys.stderr)
     print(f"   - 输出目录: {output_dir}", file=sys.stderr)
 
 
+def _archive_legacy(finance_dir, output_dir):
+    """归档无年份旧产物(global_ledger.csv 等)与旧季度报告到 results/_旧版/<时间戳>/。"""
+    archive = os.path.join(finance_dir, "results", "_旧版", time.strftime("%Y%m%d_%H%M%S"))
+    legacy = [
+        os.path.join(output_dir, "global_ledger.csv"),
+        os.path.join(output_dir, "global_ledger.json"),
+        os.path.join(output_dir, "summary.json"),
+        os.path.join(output_dir, "removed_records.csv"),
+        os.path.join(output_dir, "pending_queue.csv"),
+    ]
+    for f in legacy:
+        if os.path.exists(f):
+            os.makedirs(archive, exist_ok=True)
+            shutil.move(f, os.path.join(archive, os.path.basename(f)))
+    for pat in ("*年Q*季度账单.html", "*年Q*季度账单.md"):
+        for f in glob.glob(os.path.join(finance_dir, "results", pat)):
+            os.makedirs(archive, exist_ok=True)
+            shutil.move(f, os.path.join(archive, os.path.basename(f)))
+
+
 def main():
-    ap = argparse.ArgumentParser(description="数据层：生成全局账本（CSV/JSON）")
-    ap.add_argument("--finance-dir", default="D:/Hermes/finance",
-                    help="finance 数据根目录")
+    ap = argparse.ArgumentParser(description="数据层：生成全局账本（按年输出）")
+    ap.add_argument("--finance-dir", default=None, help="finance 数据根目录（默认 $BILLWEAVE_DATA_DIR 或 .）")
     ap.add_argument("--output-dir", default=None,
                     help="输出目录（默认 finance/results/raw/global_bill）")
     ap.add_argument("--confirm", action="append", default=[], metavar="日期|金额|类别",
                     help="确认待确认交易类别，可多次指定")
+    # --no-auto 仅为向后兼容保留（开源版默认不自动渲染，本开关恒为真）
+    ap.add_argument("--no-auto", action="store_true", help="(已无副作用,开源版默认不自动渲染)")
     args = ap.parse_args()
 
+    if args.finance_dir is None:
+        args.finance_dir = os.environ.get("BILLWEAVE_DATA_DIR") or "."
     if args.output_dir is None:
         args.output_dir = os.path.join(args.finance_dir, "results", "raw", "global_bill")
 
     build_ledger(args.finance_dir, args.output_dir, args.confirm)
+    _archive_legacy(args.finance_dir, args.output_dir)
 
 
 if __name__ == "__main__":

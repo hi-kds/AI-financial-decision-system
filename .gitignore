@@ -24,6 +24,9 @@ build/
 *.egg
 .venv/
 venv/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # ---- IDE ----
 .vscode/

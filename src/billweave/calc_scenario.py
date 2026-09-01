@@ -151,6 +151,7 @@ def main():
     ap.add_argument("--safety-line", required=True, type=float, help="账户安全余额线（至少保留多少钱）")
     ap.add_argument("--finance-dir", default=None, help="finance 数据根目录")
     ap.add_argument("--output", help="输出 JSON 文件路径（默认自动生成到 results/raw/calculation_results/）")
+    ap.add_argument("--year", type=int, default=date.today().year, help="账本年份(默认当前年)")
     args = ap.parse_args()
     if not args.finance_dir:
         args.finance_dir = os.environ.get("BILLWEAVE_DATA_DIR") or "."
@@ -161,10 +162,10 @@ def main():
     if pay_date < today:
         pay_date = today
 
-    # ---- 读取数据层输出的全局账本 ----
-    global_ledger_csv = os.path.join(args.finance_dir, "results", "raw", "global_bill", "global_ledger.csv")
+    # ---- 读取数据层输出的全局账本（按年切分） ----
+    global_ledger_csv = os.path.join(args.finance_dir, "results", "raw", "global_bill", f"global_ledger_{args.year}.csv")
     if not os.path.exists(global_ledger_csv):
-        sys.stderr.write(f"错误：找不到数据层输出文件 {global_ledger_csv}，请先运行 global_ledger.py\n")
+        sys.stderr.write(f"错误：找不到数据层输出文件 {global_ledger_csv}，请先运行 billweave ledger\n")
         sys.exit(1)
 
     all_txs = load_global_ledger(global_ledger_csv)

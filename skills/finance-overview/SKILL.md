@@ -1,11 +1,11 @@
 ---
 name: finance-overview
-description: 用户询问财务概况/总资产/负债/现金时使用。数据层→计算层→呈现层全自动生成财务概览报告。
-version: 3.0.0
+description: 用户询问财务概况/总资产/负债/现金时使用。数据层→计算层→呈现层全自动生成财务概览报告（按年账本，含待确认口径）。
+version: 3.1.0
 license: MIT
 metadata:
-  tags: [finance, 财务, 概览, 资产负债]
-  related_skills: [expense-analysis, weekly-finance-digest, global-ledger]
+  tags: [finance, 财务, 概览, 资产负债, 按年]
+  related_skills: [expense-analysis, weekly-finance-digest, global-ledger, financial-export-parsing]
 ---
 
 # 财务概览
@@ -29,7 +29,7 @@ metadata:
 
 ### 第 1 步：确保数据层已就绪
 
-若 `results/raw/global_bill/global_ledger.csv` 不存在，先运行：
+若 `results/raw/global_bill/global_ledger_{year}.csv` 不存在（按年账本，旧版无年份产物首次运行时会自动归档到 `results/_旧版/`），先运行：
 
 ```bash
 billweave ledger --workspace <工作目录>
@@ -38,22 +38,24 @@ billweave ledger --workspace <工作目录>
 ### 第 2 步：运行计算层脚本（严禁模型心算）
 
 ```bash
-billweave overview --workspace <工作目录>
+billweave overview --workspace <工作目录> --year <年>
 ```
 
-自动计算：现金、可立即使用资金、其他资产、负债、净资产、健康评估。
-结果保存到 `results/raw/calculation_results/overview_*.json`。
+`--year` 默认当前年。自动计算：现金、可立即使用资金、其他资产、负债、净资产、健康评估。结果保存到 `results/raw/calculation_results/overview_{year}_*.json`。
+
+> **口径升级（v1.2.0）**：月均支出统计**含待确认交易**（钱已真实发生，类别未定不影响金额），summary 同时附"已确认"对照字段。与旧版"仅统计已确认"略有差异，更接近真实现金流。
 
 ### 第 3 步：调用呈现层
 
 ```bash
 billweave render \
   --latest \
+  --finance-dir <工作目录> \
   --template templates/财务概览.md.j2 \
   --output reports/财务概览
 ```
 
-若报"找不到模板"，跳过渲染直接按 JSON 汇报。
+`--latest` 自动选取最新的 overview JSON。若报"找不到模板"，跳过渲染直接按 JSON 汇报。
 
 ### 第 4 步：汇报
 
@@ -64,10 +66,11 @@ billweave render \
 - 有多少负债（`负债合计`）；
 - 财务健康评估（`健康评估` 4 指标）。
 
-若有未确认交易，按金额从大到小逐条询问用户类别。
+若有未确认交易，按金额从大到小逐条询问用户类别。汇报时如引用汇总数字，注明该数字来自"含待确认口径"还是"已确认口径"（v1.2.0 起两套口径并存）。
 
 ## 常见坑
 
 - 现金 = 不受限余额；定期/理财/基金计为"其他资产"。
 - 健康评估由确定性规则计算，LLM 只翻译不重新判断。
 - 必须等数据层生成 CSV 后再跑计算层。
+- 新接入账单时先跑 `billweave inspect-match --workspace <工作目录>` 排查表头识别，避免脏数据污染账本。

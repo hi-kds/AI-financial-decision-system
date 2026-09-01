@@ -8,7 +8,7 @@
 
 Billweave is a personal bill management and analysis toolkit that turns messy, scattered transaction exports into clean financial reports — all on your own machine, with nothing ever leaving your computer.
 
-Export your statements from WeChat Pay, Alipay, or your bank, drop them into a folder, and run a single command. Billweave deduplicates cross-platform transfers, categorizes transactions, and renders Markdown + HTML reports you can review at a glance.
+Export your statements from WeChat Pay, Alipay, or your bank, drop them into a folder, and run a single command. Billweave applies a 6-level priority deduplication pipeline (refund1 → refund2 → platform transfer → cross-platform settlement → closed trade → fund movement fallback), categorizes transactions, and renders Markdown + HTML reports you can review at a glance. Ledgers are split by year, so each year's records stay clean and isolated.
 
 ## ✨ Features
 
@@ -17,12 +17,15 @@ Export your statements from WeChat Pay, Alipay, or your bank, drop them into a f
 | | |
 |---|---|
 | **Three-layer pipeline** | Separate data, computation, and presentation layers — every intermediate JSON/CSV is auditable |
-| **Cross-platform dedup** | Automatically pairs withdrawals with deposits, collapses bank-settled transfers, flags refunds |
+| **6-level priority dedup** | Refund1 > Refund2 > Platform transfer > Cross-platform settlement > Closed trade > Fund movement fallback — executed serially, higher-priority matches don't re-enter lower rules |
+| **Yearly ledger** | Data layer splits the ledger by year (`global_ledger_{year}.csv`); legacy non-yearly artifacts auto-archived on first run |
 | **Multi-format parsing** | Handles CSV (GBK), Excel (with metadata rows), and PDF (text-layout, no table lines) — auto-detects encoding and header positions |
 | **AI-assisted categorization** | Transactions that don't match any keyword rule get a suggested category from your AI agent — batch-confirm in one step |
+| **Pending-aware totals** | Overview/weekly stats include pending transactions (cash has already moved) and show a "confirmed" comparison field |
 | **Pending review queue** | Unclassified transactions land in a review queue with AI-prefilled categories; your decisions are remembered permanently (idempotent re-runs) |
 | **100% local** | No external APIs, no network calls, no data uploads — everything stays on your machine |
 | **Agent-friendly** | Designed to slot into any AI agent workflow — schedule as a cron job with Hermes, Claude, or any orchestration layer |
+| **Statement triage tool** | `billweave inspect-match` inspects header detection, field hits, and income/expense distribution — run it first whenever you add new statement formats |
 
 ## 🏗️ Architecture
 
@@ -45,11 +48,13 @@ workspace/
 
 ### Three-layer pipeline
 
-1. **Data layer** `billweave ledger` — Reads all statements → deduplicates → keyword-classifies → outputs a normalized transaction ledger
-2. **Compute layer** `billweave overview` / `billweave weekly` / `billweave scenario` — Calculates financial metrics from the normalized ledger
+1. **Data layer** `billweave ledger` — Reads all statements → 6-level priority dedup → keyword-classifies → **outputs a yearly ledger** (`global_ledger_{year}.csv`)
+2. **Compute layer** `billweave overview` / `billweave weekly` / `billweave scenario` / `billweave quarter` — Calculates financial metrics from the ledger of a given year (use `--year` to specify, defaults to current year)
 3. **Render layer** `billweave render` — Jinja2 templates → Markdown + HTML reports
 
 Each layer reads only from the previous layer's output. No implicit dependencies. A corrupted intermediate file won't break the other layers.
+
+> **Upgrading from 1.1.x**: On first run of `billweave ledger`, legacy non-yearly artifacts (`global_ledger.csv`, `summary.json`, etc.) are auto-archived to `results/_archive/<timestamp>/`. New yearly artifacts (`global_ledger_2026.csv`, etc.) are then generated — no data loss.
 
 ## 🚀 Quick Start
 
@@ -65,10 +70,15 @@ pip install billweave
 # Generate a full set of synthetic bills (WeChat / Alipay / bank / balance / debt)
 billweave sample --workspace .
 
-# Run the full pipeline
+# Run the full pipeline (data layer outputs by year → compute layer uses the year's ledger → render layer)
 billweave ledger --workspace . && \
 billweave overview --workspace . && \
+billweave weekly --workspace . && \
+billweave quarter --workspace . && \
 billweave render --latest --workspace .
+
+# Triage: after adding new statements, run inspect-match first to see what the script "sees"
+billweave inspect-match --workspace .
 ```
 
 ### Use your real statements
@@ -99,6 +109,10 @@ billweave weekly --workspace <path>
 
 # Major expense scenario analysis (pay now vs. installment vs. defer vs. skip)
 billweave scenario --amount 10000 --pay-date 2026-12-01 --safety-line 5000 --workspace <path>
+
+# Quarterly ledger (sliced from the yearly ledger; auto-creates/updates past quarters of the year)
+billweave quarter --workspace <path>             # current quarter
+billweave quarter --workspace <path> --year 2026 # auto-fills all past quarters of 2026
 
 # Render all latest JSON results into reports
 billweave render --latest --workspace <path>

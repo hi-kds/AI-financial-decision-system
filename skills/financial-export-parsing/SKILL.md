@@ -1,10 +1,10 @@
 ---
 name: financial-export-parsing
-description: 解析真实金融导出文件(微信/支付宝/银行账单)时使用。处理编码、元信息行、无表格线 PDF。
-version: 1.0.0
+description: 解析真实金融导出文件(微信/支付宝/银行账单)时使用。处理编码、元信息行、无表格线 PDF，含金额符号决策树。
+version: 1.1.0
 license: MIT
 metadata:
-  tags: [finance, parsing, csv, excel, pdf, 账单]
+  tags: [finance, parsing, csv, excel, pdf, 账单, 金额符号]
   related_skills: [expense-analysis, finance-overview, global-ledger, weekly-finance-digest]
 ---
 
@@ -52,6 +52,25 @@ metadata:
 
 - 解法：值为 "/"、"-"、以"商户单号"开头、或匹配超长正则时，回退用"交易对方"。
 
+### 6. 金额符号差异（v1.2.0 新增）
+
+不同平台的"收/支"列语义不一致，是数据层误判的最大坑源：
+
+- **银行流水（如招行）**：金额列**带符号**，正为收入、负为支出。`类型` 列通常空白或仅文字描述。
+- **微信/支付宝**：金额列**全为正数**，靠"收/支"列文字判断方向（"支出"/"收入"/"不计收支"）。若该列缺失或填错，仅看金额符号会把所有交易都判成"收入"。
+
+解法：`_file_amount_signed(rows)` 在 `load_transactions` 入口先扫一遍整张表，判断金额列是否带符号（存在负数即视为带符号）。再据此决策：
+
+| `类型` 列读得到？ | 金额带符号 | 金额全为正 | 决策 |
+|---|---|---|---|
+| 命中 neutral 关键词 | — | — | 返回 `neutral`（不计收支） |
+| 命中 expense 关键词 | — | — | 返回 `expense` |
+| 命中 income 关键词 | — | — | 返回 `income` |
+| 读不到 | 按金额符号判（负=支出/正=收入） | — | — |
+| 读不到 | — | 归 `neutral`（避免把微信/支付宝全误判成收入） | — |
+
+> `classify_income_expense(row, amount_signed)` 的新增 `amount_signed` 参数即接收此决策树的输入；返回值从 `{income, expense, neutral, unknown}` 收紧为 `{income, expense, neutral}`，不再有 `unknown`——读不到且金额全为正直接归中性，交由 ledger 去重阶段按 6 级优先级处理。
+
 ## 标准化与别名映射
 
 - 列名别名全覆盖（中英文与平台差异）。
@@ -63,6 +82,16 @@ metadata:
 1. **混合格式端到端**：造 CSV+Excel+PDF 三格式测试数据，断言关键数字。
 2. **幂等测试**：同一批数据跑两次，第二次应 0 新增。
 3. 边界用例：冻结/受限资金排除、退款配对抵消、跨平台疑似重复。
+4. **金额符号决策树测试**（v1.2.0）：造同金额正负号不同的样本（招行带符号 vs 微信全为正），断言 `classify_income_expense` 返回值符合决策树。
+
+## 去重与分类
+
+`financial-export-parsing` 只负责"把账单读进来"，去重和最终分类由 `global-ledger` skill 完成。但解析阶段产生的 `类型`（income/expense/neutral）和 `时间` 字段会影响去重判定：
+
+- **退款2 需要 `时间` 字段**：同日同金额的多笔支付宝交易，须用原始时间戳（时分秒）排序判断"较晚一笔"。
+- **平台互转锚点需要正确的 `neutral` 判定**：若解析阶段把中性交易误判成 expense，会让 `_is_transfer_anchor` 找不到锚点，进而漏掉平台互转去重。
+
+去重规则细节见 `global-ledger` skill 和 `docs/dedup-rules.md`（6 级优先级）。
 
 ## 常见坑
 

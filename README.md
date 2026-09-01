@@ -16,12 +16,15 @@ BillWeave 是一款专为个人打造的本地化账单管理与分析工具。
 | | |
 |---|---|
 | **三层分离** | 数据层 / 计算层 / 呈现层各自独立，中间产物 JSON/CSV 全部可审计 |
-| **跨平台去重** | 自动识别提现/充值配对、银行卡替付结算、退款标记 |
+| **6 级优先级去重** | 退款1>退款2>平台互转>跨平台结算>交易关闭>资金移动兜底，串行执行 |
+| **按年账本** | 数据层自动按年切分账本（global_ledger_{year}.csv），旧版无年份产物自动归档 |
 | **多格式解析** | CSV（GBK）、Excel（含元信息行）、PDF（无表格线文本排版）——自动适配编码和表头位置 |
-| **AI 推测打标** | 无关键词匹配的交易由 Agent 推测类别写入待确认队列，用户一键终审批量确认 |
+| **AI 打标** | 无关键词匹配的交易由 Agent 推测类别写入待确认队列，用户一键终审批量确认 |
 | **待确认队列** | 无法归类交易进入队列，AI 预填推测类别 + 幂等保留，确认后永久记住 |
+| **收支口径升级** | 概览/周报统计含待确认交易（钱已真实发生），并附"已确认"对照字段 |
 | **100% 本地** | 无外部 API 调用、无网络请求、不上传任何数据 |
 | **Agent 友好** | 天然适配 Hermes/Claude/任意 Agent 编排为 cron 定时任务 |
+| **账单体检工具** | `billweave inspect-match` 排查表头定位/字段命中/收支分布，新接入账单时先用它看一眼 |
 
 ## 🏗️ 架构
 
@@ -44,11 +47,13 @@ BillWeave 是一款专为个人打造的本地化账单管理与分析工具。
 
 ### 三层管线
 
-1. **数据层** `billweave ledger` — 读取所有账单 → 去重 → 关键词分类 → 输出标准化交易清单
-2. **计算层** `billweave overview` / `billweave weekly` / `billweave scenario` — 从标准清单计算各类指标
+1. **数据层** `billweave ledger` — 读取所有账单 → 6 级优先级去重 → 关键词分类 → **按年输出**标准化交易清单
+2. **计算层** `billweave overview` / `billweave weekly` / `billweave scenario` / `billweave quarter` — 从当年账本计算各类指标（用 `--year` 指定年份，默认当前年）
 3. **呈现层** `billweave render` — Jinja2 模板 → Markdown + HTML 报告
 
 每层只读前层输出，不做隐式依赖。任何中间文件损坏不影响其他层。
+
+> **从 1.1.x 升级**：首次运行 `billweave ledger` 时，旧版无年份产物（`global_ledger.csv`、`summary.json` 等）会自动归档到 `results/_旧版/<时间戳>/`，新按年产物（`global_ledger_2026.csv` 等）随后自动生成，不会丢数据。
 
 ## 🚀 快速上手
 
@@ -64,10 +69,15 @@ pip install billweave
 # 生成虚拟账单用于测试（微信/支付宝/招行/余额/债务全套合成数据）
 billweave sample --workspace .
 
-# 跑一遍完整管线
+# 跑一遍完整管线（数据层按年输出 → 计算层用当年账本 → 渲染层）
 billweave ledger --workspace . && \
 billweave overview --workspace . && \
+billweave weekly --workspace . && \
+billweave quarter --workspace . && \
 billweave render --latest --workspace .
+
+# 排障：新接入账单后先用 inspect-match 看看脚本"看到了什么"
+billweave inspect-match --workspace .
 ```
 
 ### 接入真实账单
@@ -96,6 +106,10 @@ billweave weekly --workspace <路径>
 
 # 重大支出方案（一次付 vs 分期 vs 推迟 vs 暂不付）
 billweave scenario --amount 10000 --pay-date 2026-12-01 --safety-line 5000 --workspace <路径>
+
+# 季度账本（按年全局账本切片，自动创建/更新当年已过季度）
+billweave quarter --workspace <路径>             # 当前季度
+billweave quarter --workspace <路径> --year 2026 # 自动补齐 2026 年已过季度
 
 # 统一渲染所有最新 JSON 为报告
 billweave render --latest --workspace <路径>
