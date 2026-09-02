@@ -511,7 +511,16 @@ def load_balances(finance_dir):
                     "账户": acct, "金额": amt, "币种": "CNY",
                     "数据日期": d, "受限原因": "", "来源": os.path.basename(path),
                 })
-    return rows
+    # 统一口径: 按账户取最新日期快照（历史行忽略不计）——所有消费方共用同一规则，
+    # 与 overview 的余额汇总、weekly 的"长期未更新"判断一致；日期更大才覆盖，
+    # 空日期行保留（有日期行会覆盖它）。
+    latest = {}
+    for b in rows:
+        acct = b["账户"]
+        prev = latest.get(acct)
+        if prev is None or (b["数据日期"] and b["数据日期"] > prev["数据日期"]):
+            latest[acct] = b
+    return list(latest.values())
 
 
 def load_debts(finance_dir):

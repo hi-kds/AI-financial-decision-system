@@ -56,6 +56,7 @@ def load_global_ledger(csv_path):
 def load_balances_and_debts(finance_dir, currency):
     """读取余额和债务（原始文件），返回可用现金和负债合计（目标币种）。"""
     balances = {}
+    # load_balances 已统一按账户取最新日期快照；下方二次去重仅作防御（幂等，不改变结果）
     for b in fc.load_balances(finance_dir):
         acct = b["账户"]
         prev = balances.get(acct)

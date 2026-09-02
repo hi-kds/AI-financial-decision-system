@@ -204,6 +204,108 @@ def test_match_cross_platform_settlement_removes_bank_side():
     assert len(removed) == 1  # 银行侧剔除
 
 
+# ---------- 问题2：余额快照按账户取最新日期（load_balances 统一口径） ----------
+
+import csv as _csv
+import tempfile
+from billweave import common as fc
+
+
+def _write_balance_csv(tmp, name, rows):
+    """在 tmp/balance 下写一个竖表余额 CSV。"""
+    bal_dir = os.path.join(tmp, "balance")
+    os.makedirs(bal_dir, exist_ok=True)
+    path = os.path.join(bal_dir, name)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["账户", "金额", "币种", "日期"])
+        for r in rows:
+            w.writerow(r)
+    return path
+
+
+def test_load_balances_takes_latest_date_per_account():
+    """同一账户多个日期快照 → load_balances 只返回最新日期那一行。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_balance_csv(tmp, "余额.csv", [
+            ["微信", "100.00", "CNY", "2026-08-30"],
+            ["微信", "150.00", "CNY", "2026-09-02"],
+        ])
+        rows = fc.load_balances(tmp)
+        wx = [r for r in rows if r["账户"] == "微信"]
+        assert len(wx) == 1
+        assert wx[0]["数据日期"] == "2026-09-02"
+        assert wx[0]["金额"] == 150.00
+
+
+def test_load_balances_keeps_distinct_accounts():
+    """不同账户各自保留最新快照，互不影响。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_balance_csv(tmp, "余额.csv", [
+            ["微信", "100.00", "CNY", "2026-08-30"],
+            ["微信", "150.00", "CNY", "2026-09-02"],
+            ["招商银行", "5000.00", "CNY", "2026-09-02"],
+        ])
+        rows = fc.load_balances(tmp)
+        accts = {r["账户"]: r["数据日期"] for r in rows}
+        assert accts == {"微信": "2026-09-02", "招商银行": "2026-09-02"}
+
+
+# ---------- 问题3：apply_confirm_file 批量确认 ----------
+
+def _mktx_pending(date_s, platform, amount, category="其他"):
+    return {
+        "日期": date_s, "时间": date_s, "平台": platform,
+        "类型": "expense", "项目": "test", "金额": amount,
+        "币种": "CNY", "状态": "支付成功", "对方": "", "备注": "", "支付方式": "",
+        "类别": category, "待确认": True,
+    }
+
+
+def test_apply_confirm_file_confirms_marked():
+    """用户标记 CSV 中填了类别 → 交易固化进 kept，并写入 confirm_records。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        mark = os.path.join(tmp, "标记.csv")
+        with open(mark, "w", encoding="utf-8", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["日期", "平台", "金额", "币种", "项目", "AI推测类别", "用户标记类别"])
+            w.writerow(["2026-08-10", "微信", "12.34", "CNY", "测试", "餐饮", "交通"])
+            w.writerow(["2026-08-11", "支付宝", "5.00", "CNY", "测试2", "购物", ""])  # 空 → 跳过
+            w.writerow(["2026-08-12", "微信", "8.00", "CNY", "测试3", "餐饮", "不确定"])  # 拒绝 → 跳过+标记
+        pending = [
+            _mktx_pending("2026-08-10", "微信", -12.34),
+            _mktx_pending("2026-08-11", "支付宝", -5.00),
+            _mktx_pending("2026-08-12", "微信", -8.00),
+        ]
+        kept = []
+        records = {}
+        n, warns = ledger.apply_confirm_file(pending, kept, records, [mark])
+        assert n == 1  # 只固化 1 笔（第 1 笔填了"交通"）
+        assert kept[0]["类别"] == "交通"
+        assert not kept[0]["待确认"]
+        assert "2026-08-10|12.34|微信" in records and records["2026-08-10|12.34|微信"] == "交通"
+        # 未标记/拒绝的交易仍在 pending
+        assert len(pending) == 2
+        # 用户填"不确定"的被打 _user_skip
+        assert any(t["日期"] == "2026-08-12" and t.get("_user_skip") for t in pending)
+
+
+def test_apply_confirm_file_warns_unmatched():
+    """CSV 中找不到匹配交易 → 警告列表给出提示，不影响其他固化。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        mark = os.path.join(tmp, "标记.csv")
+        with open(mark, "w", encoding="utf-8", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["日期", "平台", "金额", "用户标记类别"])
+            w.writerow(["2026-09-01", "微信", "99.00", "购物"])  # 待确认中无此笔
+        pending = [_mktx_pending("2026-08-10", "微信", -12.34)]
+        kept = []
+        records = {}
+        n, warns = ledger.apply_confirm_file(pending, kept, records, [mark])
+        assert n == 0
+        assert any("未找到匹配" in w for w in warns)
+
+
 if __name__ == "__main__":
     # 不依赖 pytest 也能跑
     sys.exit(pytest.main([__file__, "-v"]))

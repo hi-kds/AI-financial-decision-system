@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "billweave"
-version = "1.2.0"
+version = "1.3.0"
 description = "Local, auditable personal finance analyzer for Chinese payment platforms"
 readme = "README.md"
 license = "MIT"

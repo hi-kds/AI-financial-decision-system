@@ -249,7 +249,10 @@ def load_confirm_records(confirm_dir):
     path = os.path.join(confirm_dir, CONFIRM_FILE)
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            if isinstance(data, list):  # 防御: 误写为数组时按空 dict 处理
+                return {}
+            return data
     return {}
 
 
@@ -260,10 +263,11 @@ def save_confirm_records(confirm_dir, records):
         json.dump(records, f, ensure_ascii=False, indent=1)
 
 
-def build_ledger(finance_dir, output_dir, confirm_args=None):
+def build_ledger(finance_dir, output_dir, confirm_args=None, confirm_files=None, default_ai=False):
     """主流程：清洗→去重→分类→按年输出数据文件"""
     today = date.today().isoformat()
     confirm_args = confirm_args or []
+    confirm_files = confirm_files or []
 
     # 1. 读取所有账单
     txs = fc.load_transactions(finance_dir, "bills")
@@ -349,6 +353,16 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
     # 9. 保存确认记录（供后续运行使用）
     save_confirm_records(output_dir, confirm_records)
 
+    # 8.5 处理 --confirm-file（用户标记 CSV 批量确认，与 --confirm 同优先级、同固化机制）
+    #     在第 10 节 final_kept 生成前执行，移入 kept 的交易会随后被计入全量输出；
+    #     在第 12 节按年分组前执行，by_year_pending/kept 会自动反映最新状态。
+    if confirm_files:
+        n, warns = apply_confirm_file(pending, kept, confirm_records, confirm_files)
+        for w in warns:
+            print(f"警告: {w}", file=sys.stderr)
+        if n:
+            print(f"确认文件: 固化 {n} 笔", file=sys.stderr)
+
     # 10. 去重：避免同一交易在本次运行中重复加入（已通过 id 去重，但仍可能残留，做全局去重）
     seen = set()
     final_kept = []
@@ -367,19 +381,19 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
     all_txs_out = final_kept + pending
 
     # 11.5 待确认交易的"类别"列直接显示 AI 推测值（仍带"待确认"标记，未终审不固化）
-    #     从旧 pending_queue.csv 读 AI推测类别，按 日期|平台|金额 匹配；重跑幂等保留
-    ai_map = {}
-    old_pending_path = os.path.join(output_dir, "pending_queue.csv")
-    if os.path.exists(old_pending_path):
-        with open(old_pending_path, newline="", encoding="utf-8-sig") as f:
-            for row in csv.DictReader(f):
-                k = f"{row['日期']}|{row['平台']}|{row['金额']}"
-                if row.get("AI推测类别"):
-                    ai_map[k] = row["AI推测类别"]
-    for tx in pending:
-        k = f"{tx['日期']}|{tx['平台']}|{tx['金额']}"
-        if k in ai_map:
-            tx["类别"] = ai_map[k]
+    #     读取源：该年的 pending_queue_<year>.csv（无年份旧文件已按年化归档），按 日期|平台|金额 匹配；
+    #     "不确定"/留空 保持"其他"。重跑幂等保留。
+    def _load_ai_speculation(year):
+        """读该年待确认队列的 AI 推测类别，返回 {日期|平台|金额: 类别}（排除'不确定'）。"""
+        m = {}
+        p = os.path.join(output_dir, f"pending_queue_{year}.csv")
+        if os.path.exists(p):
+            with open(p, newline="", encoding="utf-8-sig") as f:
+                for row in csv.DictReader(f):
+                    val = (row.get("AI推测类别") or "").strip()
+                    if val and val != "不确定":
+                        m[f"{row['日期']}|{row['平台']}|{row['金额']}"] = val
+        return m
 
     # 12. 按年分组输出（一年一个全局账本）
     by_year = defaultdict(list)
@@ -413,6 +427,25 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
         kept_y = by_year_kept.get(year, [])
         pend_y = by_year_pending.get(year, [])
         rem_y = by_year_removed.get(year, [])
+
+        # 11.5b 待确认类别回填 AI 推测（该年队列文件；txs_y/pend_y 同对象，CSV/JSON/汇总自动一致）
+        ai_map = _load_ai_speculation(year)
+        for tx in pend_y:
+            k = f"{tx['日期']}|{tx['平台']}|{tx['金额']}"
+            if k in ai_map:
+                tx["类别"] = ai_map[k]
+
+        # 11.5c --default-ai: 用户未标记且未拒绝的交易，若 AI 有具体推测(类别≠其他)则按推测固化
+        #     （用户填"不确定"的行已打 _user_skip 标记，不参与自动固化）
+        if default_ai:
+            for tx in pend_y[:]:
+                if tx.get("_user_skip"):
+                    continue
+                if tx["类别"] != "其他":
+                    confirm_records[f"{tx['日期']}|{abs(tx['金额']):.2f}|{tx['平台']}"] = tx["类别"]
+                    tx["待确认"] = False
+                    kept_y.append(tx)
+                    pend_y.remove(tx)
 
         # 12a. 交易 CSV
         csv_path = os.path.join(output_dir, f"global_ledger_{year}.csv")
@@ -515,11 +548,115 @@ def build_ledger(finance_dir, output_dir, confirm_args=None):
         with open(os.path.join(output_dir, f"summary_{year}.json"), "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
+    # 12f. 11.5c(--default-ai)在循环内新增了确认记录, 此处统一落盘(9 节的保存早于它)
+    save_confirm_records(output_dir, confirm_records)
+
     # 17. 输出简要信息
     print("✅ 数据层处理完成（按年输出）", file=sys.stderr)
     for year in years:
         print(f"   - {year} 年账本: {len(by_year[year])} 笔 | 已确认 {len(by_year_kept.get(year, []))} | 待确认 {len(by_year_pending.get(year, []))} | 剔除 {len(by_year_removed.get(year, []))}", file=sys.stderr)
     print(f"   - 输出目录: {output_dir}", file=sys.stderr)
+
+
+def apply_confirm_file(pending, kept, confirm_records, files):
+    """读取用户标记 CSV(列含: 日期|平台|金额|用户标记类别)批量确认。
+    '用户标记类别' 为空或'不确定'的行跳过。返回 (固化笔数, 警告列表)。
+    与 --confirm 同固化机制: 写入 confirm_records(日期|金额|平台), 交易移入 kept。
+    用户填"不确定"= 明确拒绝 AI 推测 → 在对应待确认交易上打 _user_skip 标记，
+    供 --default-ai 使用(用户已拒绝的不再自动固化)。"""
+    n = 0
+    warns = []
+    for path in files:
+        if not os.path.exists(path):
+            warns.append(f"确认文件不存在: {path}")
+            continue
+        try:
+            with open(path, newline="", encoding=fc.detect_encoding(path)) as f:
+                rows = list(csv.DictReader(f))
+        except Exception as e:
+            warns.append(f"确认文件读取失败 {path}: {e}")
+            continue
+        for row in rows:
+            cat = (row.get("用户标记类别") or "").strip()
+            if not cat or cat == "不确定":
+                # 用户填"不确定" = 明确拒绝 AI 推测，标记为跳过，--default-ai 不得自动固化
+                if cat == "不确定":
+                    d0 = (row.get("日期") or "").strip()
+                    p0 = (row.get("平台") or "").strip()
+                    try:
+                        a0 = abs(float(row.get("金额")))
+                    except (TypeError, ValueError):
+                        a0 = None
+                    for tx in pending:
+                        if (a0 is not None and tx["日期"] == d0
+                                and abs(tx["金额"]) == a0 and tx["平台"] == p0):
+                            tx["_user_skip"] = True
+                            break
+                continue
+            d = (row.get("日期") or "").strip()
+            plat = (row.get("平台") or "").strip()
+            try:
+                amt = abs(float(row.get("金额")))
+            except (TypeError, ValueError):
+                warns.append(f"金额无效,跳过: {d}|{row.get('金额')}|{cat}")
+                continue
+            matched = None
+            for tx in pending:
+                if tx["日期"] == d and abs(tx["金额"]) == amt and tx["平台"] == plat:
+                    matched = tx
+                    break
+            if not matched:
+                warns.append(f"未找到匹配的待确认交易(可能已确认): {d}|{plat}|{amt} → {cat}")
+                continue
+            matched["类别"] = cat
+            matched["待确认"] = False
+            confirm_records[f"{matched['日期']}|{abs(matched['金额']):.2f}|{matched['平台']}"] = cat
+            kept.append(matched)
+            pending.remove(matched)
+            n += 1
+    return n, warns
+
+
+def export_pending_mark(output_dir, confirm_dir, force=False):
+    """生成待确认标记 CSV 到 confirm_dir(列: 日期,平台,金额,币种,项目,AI推测类别,用户标记类别)，
+    供用户手动填写'用户标记类别'列完成终审。已存在且非 force 时跳过(保留用户已填内容)。"""
+    os.makedirs(confirm_dir, exist_ok=True)
+    made = 0
+    for gl_csv in sorted(glob.glob(os.path.join(output_dir, "global_ledger_*.csv"))):
+        year = os.path.basename(gl_csv).replace("global_ledger_", "").replace(".csv", "")
+        out = os.path.join(confirm_dir, f"待确认标记_{year}.csv")
+        if os.path.exists(out) and not force:
+            print(f"跳过(已存在,可能含用户填写): {out}", file=sys.stderr)
+            continue
+        pend = []
+        with open(gl_csv, newline="", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                if r.get("待确认") == "是":
+                    pend.append(r)
+        if not pend:
+            print(f"  {year} 年无待确认交易,跳过", file=sys.stderr)
+            continue
+        ai = {}
+        pq = os.path.join(output_dir, f"pending_queue_{year}.csv")
+        if os.path.exists(pq):
+            with open(pq, newline="", encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    ai[f"{r['日期']}|{r['平台']}|{r['金额']}"] = (r.get("AI推测类别") or "").strip()
+        fields = ["日期", "平台", "金额", "币种", "项目", "AI推测类别", "用户标记类别"]
+        with open(out, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            for r in sorted(pend, key=lambda x: x["日期"]):
+                k = f"{r['日期']}|{r['平台']}|{r['金额']}"
+                w.writerow({
+                    "日期": r["日期"], "平台": r["平台"], "金额": r["金额"],
+                    "币种": r["币种"], "项目": r["备注"],
+                    "AI推测类别": ai.get(k, ""), "用户标记类别": "",
+                })
+        print(f"生成待确认标记文件: {out} ({len(pend)} 笔)", file=sys.stderr)
+        made += 1
+    if made == 0:
+        print("无新标记文件生成(全部已存在或用 --force 重建)", file=sys.stderr)
 
 
 def _archive_legacy(finance_dir, output_dir):
@@ -549,6 +686,16 @@ def main():
                     help="输出目录（默认 finance/results/raw/global_bill）")
     ap.add_argument("--confirm", action="append", default=[], metavar="日期|金额|类别",
                     help="确认待确认交易类别，可多次指定")
+    ap.add_argument("--confirm-file", action="append", default=[], metavar="CSV路径",
+                    help="从用户标记 CSV 批量确认(列: 日期,平台,金额,用户标记类别)，可多次指定")
+    ap.add_argument("--default-ai", action="store_true",
+                    help="配合 --confirm-file: 用户未标记的交易若 AI 有具体推测则自动按推测固化(用户填'不确定'的不固化)")
+    ap.add_argument("--export-pending-mark", action="store_true",
+                    help="生成待确认标记 CSV 到 --confirm-dir，供用户手动填写'用户标记类别'列")
+    ap.add_argument("--confirm-dir", default=None,
+                    help="待确认标记 CSV 目录(默认 <finance-dir>/confirm)")
+    ap.add_argument("--force", action="store_true",
+                    help="--export-pending-mark 时强制重建已存在的标记文件(覆盖用户已填内容，慎用)")
     # --no-auto 仅为向后兼容保留（开源版默认不自动渲染，本开关恒为真）
     ap.add_argument("--no-auto", action="store_true", help="(已无副作用,开源版默认不自动渲染)")
     args = ap.parse_args()
@@ -557,9 +704,16 @@ def main():
         args.finance_dir = os.environ.get("BILLWEAVE_DATA_DIR") or "."
     if args.output_dir is None:
         args.output_dir = os.path.join(args.finance_dir, "results", "raw", "global_bill")
+    if args.confirm_dir is None:
+        args.confirm_dir = os.path.join(args.finance_dir, "confirm")
 
-    build_ledger(args.finance_dir, args.output_dir, args.confirm)
+    if args.default_ai and not args.confirm_file:
+        print("警告: --default-ai 需配合 --confirm-file 使用, 本次忽略", file=sys.stderr)
+
+    build_ledger(args.finance_dir, args.output_dir, args.confirm, args.confirm_file, args.default_ai)
     _archive_legacy(args.finance_dir, args.output_dir)
+    if args.export_pending_mark:
+        export_pending_mark(args.output_dir, args.confirm_dir, args.force)
 
 
 if __name__ == "__main__":

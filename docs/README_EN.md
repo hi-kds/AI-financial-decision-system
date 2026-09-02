@@ -18,14 +18,11 @@ Export your statements from WeChat Pay, Alipay, or your bank, drop them into a f
 |---|---|
 | **Three-layer pipeline** | Separate data, computation, and presentation layers — every intermediate JSON/CSV is auditable |
 | **6-level priority dedup** | Refund1 > Refund2 > Platform transfer > Cross-platform settlement > Closed trade > Fund movement fallback — executed serially, higher-priority matches don't re-enter lower rules |
-| **Yearly ledger** | Data layer splits the ledger by year (`global_ledger_{year}.csv`); legacy non-yearly artifacts auto-archived on first run |
 | **Multi-format parsing** | Handles CSV (GBK), Excel (with metadata rows), and PDF (text-layout, no table lines) — auto-detects encoding and header positions |
-| **AI-assisted categorization** | Transactions that don't match any keyword rule get a suggested category from your AI agent — batch-confirm in one step |
-| **Pending-aware totals** | Overview/weekly stats include pending transactions (cash has already moved) and show a "confirmed" comparison field |
-| **Pending review queue** | Unclassified transactions land in a review queue with AI-prefilled categories; your decisions are remembered permanently (idempotent re-runs) |
+| **AI-assisted categorization** | Transactions that don't match any keyword rule get a suggested category from your AI agent — the suggestion shows right in the ledger's `类别` column; batch-confirm in one step |
+| **Pending review queue** | Unclassified transactions land in a review queue with AI-prefilled categories; `--export-pending-mark` writes a CSV to mark by hand, `--confirm-file` commits them in bulk, and your decisions are remembered permanently (idempotent re-runs) |
 | **100% local** | No external APIs, no network calls, no data uploads — everything stays on your machine |
 | **Agent-friendly** | Designed to slot into any AI agent workflow — schedule as a cron job with Hermes, Claude, or any orchestration layer |
-| **Statement triage tool** | `billweave inspect-match` inspects header detection, field hits, and income/expense distribution — run it first whenever you add new statement formats |
 
 ## 🏗️ Architecture
 
@@ -97,6 +94,27 @@ bills/                          # Top-level bills directory
 ```
 
 Then run the same commands against that directory.
+
+### Marking pending transactions
+
+Transactions the script cannot categorize go into a "pending queue" (`pending_queue_{year}.csv`). The AI-suggested category is written straight into the ledger's `类别` column (still flagged as pending) so you can review it.
+
+```bash
+# 1. Export a pending-mark CSV to confirm/ (columns: date|platform|amount|currency|item|AI-suggested|user-marked)
+billweave ledger --export-pending-mark --workspace <path>
+
+# 2. Open confirm/待确认标记_2026.csv and fill the "用户标记类别" column
+#    (blank = skip; "不确定" = reject the AI suggestion)
+
+# 3. Batch-commit your marks
+billweave ledger --confirm-file confirm/待确认标记_2026.csv --workspace <path>
+
+# Optional: --default-ai auto-commits any transaction the user left unmarked AND not
+# rejected that has a concrete AI suggestion (category != 其他)
+billweave ledger --confirm-file confirm/待确认标记_2026.csv --default-ai --workspace <path>
+```
+
+Re-run `overview` / `weekly` / `quarter` / `render` afterwards to sync the reports.
 
 ### Generate reports
 

@@ -64,15 +64,9 @@ def load_balances_and_debts(finance_dir, currency):
       - 详细余额行、详细债务行（供数据来源披露）
     """
     # ---- 余额 ----
+    # load_balances 已统一按账户取最新日期快照（历史行忽略不计），此处无需再按账户去重
     raw_balances = fc.load_balances(finance_dir)
-    # 按账户取最新（如果有重复）
-    bal_map = {}
-    for b in raw_balances:
-        acct = b["账户"]
-        prev = bal_map.get(acct)
-        if prev is None or (b["数据日期"] and b["数据日期"] > prev["数据日期"]):
-            bal_map[acct] = b
-    balance_rows = list(bal_map.values())
+    balance_rows = list(raw_balances)
 
     cash_total = 0.0
     asset_total = 0.0

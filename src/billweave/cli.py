@@ -38,6 +38,16 @@ def main():
     sp.add_argument("--workspace", default=".", help="工作目录（默认当前目录）")
     sp.add_argument("--confirm", action="append", default=[], metavar="日期|金额|类别",
                     help="确认待确认交易类别，可多次指定")
+    sp.add_argument("--confirm-file", action="append", default=[], metavar="CSV路径",
+                    help="从用户标记 CSV 批量确认(列: 日期,平台,金额,用户标记类别)，可多次指定")
+    sp.add_argument("--default-ai", action="store_true",
+                    help="配合 --confirm-file: 用户未标记的交易若 AI 有具体推测则自动按推测固化(用户填'不确定'的不固化)")
+    sp.add_argument("--export-pending-mark", action="store_true",
+                    help="生成待确认标记 CSV 到 --confirm-dir，供用户手动填写'用户标记类别'列")
+    sp.add_argument("--confirm-dir", default=None,
+                    help="待确认标记 CSV 目录(默认 <workspace>/confirm)")
+    sp.add_argument("--force", action="store_true",
+                    help="--export-pending-mark 时强制重建已存在的标记文件(覆盖用户已填内容，慎用)")
 
     # overview
     sp = subparsers.add_parser("overview", help="计算层：财务概览")
@@ -134,6 +144,17 @@ def main():
     if hasattr(args, "confirm") and args.confirm:
         for c in args.confirm:
             forward_args.extend(["--confirm", c])
+    if hasattr(args, "confirm_file") and args.confirm_file:
+        for c in args.confirm_file:
+            forward_args.extend(["--confirm-file", c])
+    if hasattr(args, "default_ai") and args.default_ai:
+        forward_args.append("--default-ai")
+    if hasattr(args, "export_pending_mark") and args.export_pending_mark:
+        forward_args.append("--export-pending-mark")
+    if hasattr(args, "confirm_dir") and args.confirm_dir:
+        forward_args.extend(["--confirm-dir", args.confirm_dir])
+    if hasattr(args, "force") and args.force:
+        forward_args.append("--force")
 
     # 透传未识别的参数
     forward_args.extend(remaining)
