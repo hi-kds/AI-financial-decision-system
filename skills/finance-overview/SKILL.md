@@ -1,7 +1,7 @@
 ---
 name: finance-overview
-description: 用户询问财务概况/总资产/负债/现金时使用。数据层→计算层→呈现层全自动生成财务概览报告（按年账本，含待确认口径）。
-version: 3.1.0
+description: 用户询问财务概况/总资产/负债/现金时使用。数据层→计算层→呈现层全自动生成财务概览报告（按年账本，含待确认口径，可选 LLM 财务建议）。
+version: 3.2.0
 license: MIT
 metadata:
   tags: [finance, 财务, 概览, 资产负债, 按年]
@@ -50,6 +50,22 @@ billweave overview --workspace <工作目录> --year <年>
 `--year` 默认当前年。自动计算：现金、可立即使用资金、其他资产、负债、净资产、健康评估。结果保存到 `results/raw/calculation_results/overview_{year}_*.json`。
 
 > **口径升级（v1.2.0）**：月均支出统计**含待确认交易**（钱已真实发生，类别未定不影响金额），summary 同时附"已确认"对照字段。与旧版"仅统计已确认"略有差异，更接近真实现金流。
+>
+> **固定资产/固定支出（同步自本地版）**：计算层额外读取工作目录 `confirm/fixed_expenses.json`（未来 90 天内确定支出，逐笔计入"未来三个月确定支出"）与 `confirm/fixed_assets.json`（用户手动维护的固定资产估值，计入"其他资产合计"并单列明细）。两文件均可选，缺失时静默跳过。
+
+### 第 2.5 步：LLM 生成财务建议（可选，报告含"八、财务建议"区块时）
+
+计算层跑完后，如需在报告中输出"财务建议"，由 LLM（非脚本）基于最新 `overview_*.json` 生成：
+
+1. 读取计算层输出（`results/raw/calculation_results/overview_{最近}.json`）中"最近"的一份，取 现金/可立即使用/其他资产/负债/净资产/健康评估 4 指标/未来三个月确定支出/月均支出 等数据。
+2. 生成建议列表，每条含 `观察` + `依据` 两字段（观察是结论，依据引用具体数字或指标状态；健康评估"偏紧/需关注"的指标应翻译成可执行建议，如"应急储备仅 0.1 个月，建议至少保留 3 个月支出"）。**LLM 只翻译与解读，不重新心算。**
+3. 写入建议 JSON：`results/raw/calculation_results/overview_advice_<YYYYMMDD>.json`
+   ```json
+   { "财务建议": [ {"观察": "...", "依据": "..."}, ... ] }
+   ```
+4. 渲染时用 `--extra` 注入（见第 3 步）。
+
+> 注意：`render --latest` 已自动排除 `*_advice_*.json`，建议文件可与计算结果安全共存于同一目录。若文件不加建议（跳过本步），报告"财务建议"区将显示占位说明，属正常。
 
 ### 第 3 步：调用呈现层
 
@@ -58,17 +74,18 @@ billweave render \
   --latest \
   --finance-dir <工作目录> \
   --template templates/财务概览.md.j2 \
-  --output reports/财务概览
+  --output reports/财务概览 \
+  --extra results/raw/calculation_results/overview_advice_<YYYYMMDD>.json
 ```
 
-`--latest` 自动选取最新的 overview JSON。若报"找不到模板"，跳过渲染直接按 JSON 汇报。
+`--latest` 自动选取最新的 overview JSON（排除 `overview_advice_*`）。`--extra` 把建议 JSON 的 key 合并为模板顶层变量，模板"八、财务建议"区的 `{% for adv in 财务建议 %}` 即可渲染；未生成建议时不传 `--extra` 即可。若报"找不到模板"，跳过渲染直接按 JSON 汇报。
 
 ### 第 4 步：汇报
 
 用普通人能看懂的话回答：
 - 现金有多少（`现金合计`）；
 - 可立即使用资金（`可立即使用资金合计`）；
-- 还有哪些资产（`其他资产合计`）；
+- 还有哪些资产（`其他资产合计`，其中固定资产 `固定资产合计` 若有则单独说明）；
 - 有多少负债（`负债合计`）；
 - 财务健康评估（`健康评估` 4 指标）。
 
@@ -76,7 +93,9 @@ billweave render \
 
 ## 常见坑
 
-- 现金 = 不受限余额；定期/理财/基金计为"其他资产"。
+- 现金 = 不受限余额；定期/理财/基金计为"其他资产"；固定资产（`confirm/fixed_assets.json`）按"估值"计入其他资产合计，未做折旧。
+- 未来三个月确定支出含 `confirm/fixed_expenses.json` 中落在 90 天窗口内的条目（窗口外仅提示不计入）。
 - 健康评估由确定性规则计算，LLM 只翻译不重新判断。
 - 必须等数据层生成 CSV 后再跑计算层。
 - 新接入账单时先跑 `billweave inspect-match --workspace <工作目录>` 排查表头识别，避免脏数据污染账本。
+- 财务建议由 LLM 生成并注入；若某指标状态为"数据不足"，不要编造建议，如实说明缺哪份数据。

@@ -395,7 +395,13 @@ def render_report(json_path, template_path, output_base, extra_path=None):
     # ---- 3. 渲染（Jinja2） ----
     # 注入调色板供模板生成图表；_data 用于访问含特殊字符(全角括号等)的 key；
     # _extra 为附加 JSON（--extra 指定，如全局账本的 global_ledger.json）
+    # extra 同时合并到 data 顶层，使附加 key（如 LLM 生成的 财务建议）可直接被模板
+    # {% for adv in 财务建议 %} 使用，无需经 _extra 中转。
     data["_palette"] = PALETTE
+    if extra:
+        for k, v in extra.items():
+            if k not in data:
+                data[k] = v
     try:
         rendered = template.render(_data=data, _extra=extra, **data)
     except Exception as e:
@@ -463,13 +469,13 @@ def main():
     ap.add_argument("--input", "-i",
                     help="计算层输出的 JSON 文件路径（与 --latest 二选一）")
     ap.add_argument("--latest", action="store_true",
-                    help="自动从 calculation_results 目录中按修改时间选取最新的 JSON（与 --input 二选一）")
+                    help="自动从 calculation_results 目录中按修改时间选取最新的 JSON（与 --input 二选一；自动排除 *_advice_*.json 建议文件）")
     ap.add_argument("--calc-dir", default=None,
                     help="--latest 模式下扫描的目录（默认 $BILLWEAVE_DATA_DIR/results/raw/calculation_results 或 ./data/...）")
     ap.add_argument("--finance-dir", default=None,
                     help="等价于 --calc-dir 的根目录别名（自动拼 results/raw/calculation_results），与其它子命令保持一致")
     ap.add_argument("--extra", default=None,
-                    help="附加 JSON 文件，以 _extra 变量注入模板（如全局账本模板需要同时读 summary.json 与 global_ledger.json）")
+                    help="附加 JSON 文件：其 key 合并到模板顶层变量（如 LLM 生成的 财务建议 经 --extra 注入后可直接被模板使用）；也保留为 _extra 供 全局账本 模板取用")
     ap.add_argument("--template", "-t", required=True,
                     help="Jinja2 模板文件路径（*.md.j2）")
     ap.add_argument("--output", "-o", required=True,
@@ -501,7 +507,8 @@ def main():
             sys.stderr.write(f"错误：无法从模板名 '{template_name}' 推断 JSON 前缀，"
                              f"请在 {list(PREFIX_MAP.keys())} 中，或改用 --input 显式指定文件\n")
             sys.exit(1)
-        files = glob.glob(os.path.join(calc_dir, f"{prefix}_*.json"))
+        files = [f for f in glob.glob(os.path.join(calc_dir, f"{prefix}_*.json"))
+                 if "_advice_" not in os.path.basename(f)]
         if not files:
             sys.stderr.write(f"错误：{calc_dir} 下找不到 {prefix}_*.json，请先运行对应计算层脚本\n")
             sys.exit(1)

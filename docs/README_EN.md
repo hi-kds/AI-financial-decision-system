@@ -2,17 +2,17 @@
 
 **[中文](../README.md)** | English
 
-> A local-first, auditable personal finance analyzer built for WeChat Pay, Alipay, and Chinese bank statements.
+> An auditable personal finance analyzer built for WeChat Pay, Alipay, and Chinese bank statements.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Billweave is a personal bill management and analysis toolkit that turns messy, scattered transaction exports into clean financial reports — all on your own machine, with nothing ever leaving your computer.
+Billweave is a personal bill management and analysis toolkit that turns messy, scattered transaction exports into clean financial reports.
 
 Export your statements from WeChat Pay, Alipay, or your bank, drop them into a folder, and run a single command. Billweave applies a 6-level priority deduplication pipeline (refund1 → refund2 → platform transfer → cross-platform settlement → closed trade → fund movement fallback), categorizes transactions, and renders Markdown + HTML reports you can review at a glance. Ledgers are split by year, so each year's records stay clean and isolated.
 
 ## ✨ Features
 
-![Three-tier Analysis System](三级分析系统.jpg)
+![Three-tier Analysis System](分析系统.jpg)
 
 | | |
 |---|---|
@@ -21,7 +21,7 @@ Export your statements from WeChat Pay, Alipay, or your bank, drop them into a f
 | **Multi-format parsing** | Handles CSV (GBK), Excel (with metadata rows), and PDF (text-layout, no table lines) — auto-detects encoding and header positions |
 | **AI-assisted categorization** | Transactions that don't match any keyword rule get a suggested category from your AI agent — the suggestion shows right in the ledger's `类别` column; batch-confirm in one step |
 | **Pending review queue** | Unclassified transactions land in a review queue with AI-prefilled categories; `--export-pending-mark` writes a CSV to mark by hand, `--confirm-file` commits them in bulk, and your decisions are remembered permanently (idempotent re-runs) |
-| **100% local** | No external APIs, no network calls, no data uploads — everything stays on your machine |
+| **Fixed assets / future expenses** | Maintain `confirm/fixed_assets.json` and `confirm/fixed_expenses.json`; `overview` automatically counts them into total assets and confirmed expenses in the next 90 days |
 | **Agent-friendly** | Designed to slot into any AI agent workflow — schedule as a cron job with Hermes, Claude, or any orchestration layer |
 
 ## 🏗️ Architecture
@@ -34,6 +34,7 @@ workspace/
 │   └── 招商银行/       ← Bank statements
 ├── balance/            ← Balance snapshots (xlsx / csv / pdf)
 ├── debt/               ← Debt records
+├── confirm/            ← Pending-review CSVs + user-maintained lists (fixed assets / fixed expenses JSON)
 ├── results/            ← Auto-generated (gitignored)
 │   ├── raw/
 │   │   ├── global_bill/           ← Data layer output (CSV + JSON)
@@ -97,7 +98,7 @@ Then run the same commands against that directory.
 
 ### Marking pending transactions
 
-Transactions the script cannot categorize go into a "pending queue" (`pending_queue_{year}.csv`). The AI-suggested category is written straight into the ledger's `类别` column (still flagged as pending) so you can review it.
+Transactions the script cannot categorize go into a "pending queue" (`pending_queue_{year}.csv`). The AI-suggested category is written straight into the global ledger's `类别` column — still flagged as "pending" — so you can review it.
 
 ```bash
 # 1. Export a pending-mark CSV to confirm/ (columns: date|platform|amount|currency|item|AI-suggested|user-marked)
@@ -136,6 +137,24 @@ billweave quarter --workspace <path> --year 2026 # auto-fills all past quarters 
 billweave render --latest --workspace <path>
 ```
 
+#### `overview` optional: fixed-asset / fixed-expense lists
+
+`overview` additionally reads two JSON files under `confirm/` (both are **top-level arrays, UTF-8, and optional** — silently skipped when absent):
+
+| File | Fields (write these Chinese JSON keys) | How it's counted |
+|------|--------|------------------|
+| `confirm/fixed_assets.json` | `资产类型` asset type, `名称描述` name+description, `估值` valuation, `币种` currency, `估值日期` valuation date, `备注` notes | entries with `估值` > 0 are added to "other assets total" (rolled into total assets) |
+| `confirm/fixed_expenses.json` | `名称` name, `日期` date (YYYY-MM-DD), `金额` amount, `币种` currency, `类别` category, `备注` notes | only entries whose `日期` falls within **today ~ today+90 days** count toward "confirmed expenses in the next 3 months"; entries outside the window are only noted, not counted |
+
+Example:
+
+```bash
+# Running sample auto-generates these two files under confirm/; you can also write same-name JSON by hand
+billweave sample --workspace .
+```
+
+> Note: valuations for fixed assets (e.g. a laptop, a bike) are maintained by you; a JSON parse failure only warns and never aborts the computation. When orchestrating with an agent, re-run `overview` / `render` to sync the reports with these two lists.
+
 ## 📋 Supported Statement Formats
 
 | Platform | Format | Known Quirk | How Billweave Handles It |
@@ -149,7 +168,7 @@ Detailed dedup rules are documented in [docs/dedup-rules.md](docs/dedup-rules.md
 
 ## 🎯 Use Cases
 
-- **Personal bookkeeping** — Drop monthly exports into the folder, get auto-generated visual reports
+- **Personal bookkeeping** — Drop in statements, get auto-generated visual reports
 - **Budget planning** — Run the `scenario` module for cash-flow stress testing before a big purchase
 - **Agent integration** — Pair with Hermes or any AI agent to run weekly reconciliation as a cron job
 - **For developers** — Study the dedup logic and parsers as a reference for handling your own financial data sources

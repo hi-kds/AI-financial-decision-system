@@ -1,7 +1,7 @@
 ---
 name: global-ledger
 description: 全局账本:汇总各平台账单、6 级优先级去重分类、按年输出、待确认AI推测+用户终审。任务执行后自动更新,用户问"总共花了多少"或要季度账本时使用。
-version: 3.2.0
+version: 3.3.0
 license: MIT
 metadata:
   tags: [finance, 账本, 汇总, 分类, 按年]
@@ -106,6 +106,28 @@ billweave ledger \
 - 确认完重跑一次数据层脚本，CSV/JSON/summary 即更新。
 
 **注意**：AI 推测仅供用户参考，**最终类别必须经用户终审**后才写入 confirm_records；用户未批准的推测不固化。
+
+### 第 4.5 步：确认后自动触发概览更新（如用户在做财务概览复盘）
+
+用户终审确认 → 数据层重跑后，若当前处于"财务概览"语境（用户关心概览/建议），**自动**执行以下流程（无需用户额外要求）：
+
+1. **运行计算层（概览）**：
+   ```bash
+   billweave overview --workspace <工作目录> --year <年>
+   ```
+2. **LLM 重新生成财务建议**：读取最新 `results/raw/calculation_results/overview_*.json`，基于最新确认数据生成建议，写入 `results/raw/calculation_results/overview_advice_<YYYYMMDD>.json`（格式与要求同 finance-overview skill 第 2.5 步）。
+3. **重新渲染概览报告**：
+   ```bash
+   billweave render \
+     --latest \
+     --finance-dir <工作目录> \
+     --template templates/财务概览.md.j2 \
+     --output reports/财务概览_<YYYYMMDD> \
+     --extra results/raw/calculation_results/overview_advice_<YYYYMMDD>.json
+   ```
+4. **简要汇报变化**：告知用户哪些数据因确认而变化（如分类调整导致某类别支出增减），附上最新概览报告链接。
+
+> 此步骤确保确认后财务概览和建议始终反映最新数据状态。若用户仅在核对账本明细（不涉概览），可跳过本步以省 token。
 
 ### 第 5 步：用户要查看账本时
 

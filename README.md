@@ -2,16 +2,16 @@
 
 中文 | **[English](docs/README_EN.md)**
 
-> 本地化、可审计的个人财务分析工具，专为微信/支付宝/银行账单格式设计。
+> 可审计的个人财务分析工具，专为微信/支付宝/银行账单格式设计。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-BillWeave 是一款专为个人打造的本地化账单管理与分析工具。
+BillWeave 是一款专为个人打造的账单管理与分析工具。
 它旨在帮助个人用户轻松整理、清洗并汇总各类零散的账单数据，自动生成清晰直观的财务报告。通过简单的命令行操作，你可以快速完成从原始账单到可视化报表的转换，让个人财务复盘变得简单高效。
 
 ## ✨ 特性
 
-![三级分析系统](docs/三级分析系统.jpg)
+![三级分析系统](docs/分析系统.jpg)
 
 | | |
 |---|---|
@@ -20,7 +20,7 @@ BillWeave 是一款专为个人打造的本地化账单管理与分析工具。
 | **多格式解析** | CSV（GBK）、Excel（含元信息行）、PDF（无表格线文本排版）——自动适配编码和表头位置 |
 | **AI 打标** | 无关键词匹配的交易由 Agent 推测类别写入待确认队列，推测值直接显示在账本"类别"列，用户一键终审批量确认 |
 | **待确认队列** | 无法归类交易进入队列，AI 预填推测类别 + 幂等保留；`--export-pending-mark` 导出 CSV 手工标记，`--confirm-file` 批量固化 |
-| **100% 本地** | 无外部 API 调用、无网络请求、不上传任何数据 |
+| **固定资产 / 未来支出** | 维护 `confirm/fixed_assets.json` 与 `confirm/fixed_expenses.json`，`overview` 自动计入总资产与未来 90 天确定支出 |
 | **Agent 友好** | 天然适配 Hermes/Claude/任意 Agent 编排为 cron 定时任务 |
 
 ## 🏗️ 架构
@@ -33,6 +33,7 @@ BillWeave 是一款专为个人打造的本地化账单管理与分析工具。
 │   └── 招商银行/
 ├── balance/            ← 余额快照（xlsx/csv/pdf）
 ├── debt/               ← 债务记录
+├── confirm/            ← 待确认交易 CSV + 用户维护清单（固定资产/固定支出 JSON）
 ├── results/            ← 自动生成（git 忽略）
 │   ├── raw/
 │   │   ├── global_bill/           ← 数据层输出（CSV + JSON）
@@ -79,7 +80,7 @@ billweave inspect-match --workspace .
 
 ### 接入真实账单
 
-把你的微信/支付宝导出文件和银行 PDF 按约定目录存放，运行同样的命令即可。
+按约定目录存放你的微信/支付宝导出文件和银行 PDF，运行同样的命令即可。
 
 ```
 bills/                          # 根目录下放账单
@@ -131,6 +132,24 @@ billweave quarter --workspace <路径> --year 2026 # 自动补齐 2026 年已过
 billweave render --latest --workspace <路径>
 ```
 
+#### overview 可选：固定资产 / 固定支出清单
+
+`overview` 会额外读取 `confirm/` 下的两份 JSON（**均为顶层数组、UTF-8、均可缺省**，缺省时静默跳过）：
+
+| 文件 | 字段 | 计入口径 |
+|------|------|----------|
+| `confirm/fixed_assets.json` | 资产类型 / 名称描述 / 估值 / 币种 / 估值日期 / 备注 | 估值 > 0 的条目计入"其他资产合计"（并入总资产） |
+| `confirm/fixed_expenses.json` | 名称 / 日期(YYYY-MM-DD) / 金额 / 币种 / 类别 / 备注 | 仅日期落在 **今天 ~ 今天+90 天** 窗口内的计入"未来三个月确定支出"；窗口外条目只提示不计入 |
+
+示例：
+
+```bash
+# 运行 sample 会自动在 confirm/ 生成这两份文件；也可手写同名 JSON
+billweave sample --workspace .
+```
+
+> 说明：固定资产现值需你按实际维护（如笔记本、自行车），JSON 解析失败只会警告、不会中断计算。若用 Agent 编排，重跑 `overview` / `render` 即可让报告同步这两份清单。
+
 ## 📋 支持的账单格式
 
 | 平台 | 格式 | 已知问题 | 处理方式 |
@@ -144,7 +163,7 @@ billweave render --latest --workspace <路径>
 
 ## 🎯 适用场景
 
-- **个人记账**：把每月导出的账单往里丢，自动生成可视化报告
+- **个人记账**：放入账单，自动生成可视化报告
 - **预算规划**：用 scenario 模块做大额消费前的现金流压力测试
 - **Agent 集成**：配合 Hermes/OpenClaw 等 Agent 设为每周自动账本（cron）
 - **开发者**：参考去重逻辑和解析层代码，处理你自己的财务数据源

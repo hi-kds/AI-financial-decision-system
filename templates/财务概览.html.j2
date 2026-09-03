@@ -173,9 +173,13 @@
       <tbody>
         {% for a in 资产账户明细 %}
         <tr><td>定期/投资</td><td>{{ a['账户'] }}</td><td class="num">{{ '%.2f'|format(a['金额']) }}</td><td>{{ a['币种'] }}</td><td>{{ a['数据日期'] }}</td><td>{{ a['来源'] }}</td></tr>
-        {% else %}
-        <tr><td colspan="6">(无其他资产)</td></tr>
         {% endfor %}
+        {% for a in 固定资产明细 %}
+        <tr><td>{{ a['资产类型'] }}</td><td>{{ a['名称描述'] }}</td><td class="num">{{ '%.2f'|format(a['估值']) }}</td><td>{{ a['币种'] }}</td><td>{{ a['估值日期'] }}</td><td>confirm/fixed_assets.json</td></tr>
+        {% endfor %}
+        {% if not 资产账户明细 and not 固定资产明细 %}
+        <tr><td colspan="6">(无其他资产)</td></tr>
+        {% endif %}
       </tbody>
     </table>
   </section>

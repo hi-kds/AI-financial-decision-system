@@ -55,6 +55,52 @@ def load_global_ledger(csv_path):
     return txs
 
 
+def load_fixed_expenses(finance_dir):
+    """读取用户维护的未来确定支出清单 fixed_expenses.json（位于 confirm/，顶层数组）。
+    每条: 名称/日期(YYYY-MM-DD)/金额(正数)/币种/类别/备注。
+    解析失败打警告并返回空列表（不中断计算，避免用户手改 JSON 出错导致脚本崩）。"""
+    path = os.path.join(finance_dir, "confirm", "fixed_expenses.json")
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            sys.stderr.write("警告: confirm/fixed_expenses.json 顶层应为数组, 已忽略\n")
+            return []
+        return data
+    except Exception as e:
+        sys.stderr.write(f"警告: confirm/fixed_expenses.json 读取失败, 已忽略: {e}\n")
+        return []
+
+
+def load_fixed_assets(finance_dir):
+    """读取用户维护的固定资产清单 fixed_assets.json（位于 confirm/，顶层数组）。
+    每条: 资产类型/名称描述/估值(正数)/币种/估值日期(YYYY-MM-DD)/备注。
+    返回 (资产列表, 资产总额)。解析失败打警告并返回空列表（不中断计算）。"""
+    path = os.path.join(finance_dir, "confirm", "fixed_assets.json")
+    if not os.path.exists(path):
+        return [], 0.0
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            sys.stderr.write("警告: confirm/fixed_assets.json 顶层应为数组, 已忽略\n")
+            return [], 0.0
+        total = 0.0
+        for item in data:
+            try:
+                val = float(item.get("估值", 0))
+                if val > 0:
+                    total += val
+            except (ValueError, TypeError):
+                continue
+        return data, total
+    except Exception as e:
+        sys.stderr.write(f"警告: confirm/fixed_assets.json 读取失败, 已忽略: {e}\n")
+        return [], 0.0
+
+
 def load_balances_and_debts(finance_dir, currency):
     """
     读取余额和债务（原始文件），返回：
@@ -294,11 +340,57 @@ def main():
                 "备注": tx["备注"],
             })
 
+    # ---- 2.5 固定/未来支出清单(confirm/fixed_expenses.json, 用户维护, 逐笔直算) ----
+    # 账本里不存在未来交易(账单均为过去), 未来三个月确定支出以此文件为主;
+    # 窗口口径与账本筛选一致: today <= 日期 <= today+90天。窗口外条目仅提示不计入。
+    fixed_expenses = load_fixed_expenses(args.finance_dir)
+    fixed_expenses_in = []   # 窗口内条目(输出到 JSON "固定支出明细")
+    fixed_expenses_out = 0   # 窗口外条目数(仅提示)
+    for fe in fixed_expenses:
+        ds = (fe.get("日期") or "").strip()
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        fe_cur = (fe.get("币种") or "CNY").upper()
+        if fe_cur != currency:
+            continue
+        amt = fc.to_number(fe.get("金额"))
+        if amt is None or amt <= 0:
+            continue
+        if d < today or d > three_months_later:
+            fixed_expenses_out += 1
+            continue
+        name = (fe.get("名称") or "固定支出").strip()
+        note = (fe.get("备注") or "").strip()
+        future_expenses.append({
+            "日期": ds,
+            "平台": "固定支出",
+            "类别": (fe.get("类别") or "固定支出").strip(),
+            "金额": amt,
+            "币种": fe_cur,
+            "备注": name + (f" | {note}" if note else ""),
+        })
+        fixed_expenses_in.append({
+            "日期": ds,
+            "名称": name,
+            "金额": amt,
+            "币种": fe_cur,
+            "类别": (fe.get("类别") or "").strip(),
+            "备注": note,
+        })
+    if fixed_expenses_out:
+        sys.stderr.write(f"   - 固定支出 {fixed_expenses_out} 条在 90 天窗口外, 未计入未来三个月\n")
+
     # ---- 3. 读取余额和债务（原始文件，临时过渡） ----
     (cash_total, asset_total, debt_total, balance_rows, debt_rows,
      all_currency_balances, cash_accounts, asset_accounts) = load_balances_and_debts(
         args.finance_dir, currency
     )
+
+    # ---- 3.1 读取固定资产（confirm/fixed_assets.json, 用户手动维护） ----
+    fixed_assets_list, fixed_assets_total = load_fixed_assets(args.finance_dir)
+    asset_total += fixed_assets_total  # 固定资产计入其他资产合计
 
     # 可用资金 = 现金（不受限），与设计文档中“有多少资金可以马上使用”对应
     available_funds = cash_total
@@ -338,6 +430,7 @@ def main():
             for e in sorted(future_expenses, key=lambda x: x["日期"])
         ],
         "未来三个月确定支出合计": round(sum(e["金额"] for e in future_expenses), 2),
+        "固定支出明细": fixed_expenses_in,
         "未确认交易（全部）": [
             {
                 "日期": tx["日期"],
@@ -358,9 +451,22 @@ def main():
             "总资产": round(cash_total + asset_total, 2),
             "现金占比": round(cash_total / (cash_total + asset_total) * 100, 1) if (cash_total + asset_total) > 0 else None,
             "其他资产占比": round(asset_total / (cash_total + asset_total) * 100, 1) if (cash_total + asset_total) > 0 else None,
+            "固定资产占比": round(fixed_assets_total / (cash_total + asset_total) * 100, 1) if (cash_total + asset_total) > 0 else None,
         },
         "现金账户明细": cash_accounts,
         "资产账户明细": asset_accounts,
+        "固定资产明细": [
+            {
+                "资产类型": item.get("资产类型", ""),
+                "名称描述": item.get("名称描述", ""),
+                "估值": item.get("估值", 0),
+                "币种": item.get("币种", "CNY"),
+                "估值日期": item.get("估值日期", ""),
+                "备注": item.get("备注", ""),
+            }
+            for item in fixed_assets_list
+        ],
+        "固定资产合计": round(fixed_assets_total, 2),
         "未来三个月待确认交易": [
             {
                 "日期": tx["日期"],
@@ -376,6 +482,7 @@ def main():
             "全局账本": global_ledger_csv,
             "余额快照": [{"账户": b["账户"], "金额": b["金额"], "币种": b["币种"], "日期": b["数据日期"], "受限原因": b.get("受限原因", "")} for b in balance_rows],
             "债务记录": [{"债权人": d["债权人"], "金额": d["金额"], "币种": d["币种"], "日期": d["数据日期"]} for d in debt_rows],
+            "固定资产": os.path.join(args.finance_dir, "confirm", "fixed_assets.json"),
         },
         "缺失/待补充信息": [
             "如需多币种换算，请提供汇率及基准日期。",

@@ -172,12 +172,34 @@ def generate(workspace="."):
             f.write((",".join(["花呗", "450.00", "CNY", "2026-08-30", "未还清", "2026-09-09"]) + "\n").encode("utf-8"))
             f.write((",".join(["借同学小林", "200.00", "CNY", "2026-08-30", "未还清", "2026-09-30"]) + "\n").encode("utf-8"))
 
+    # --- 用户维护清单（confirm/，供 overview 计入未来支出与固定资产） ---
+    def gen_confirm():
+        import json as _json
+        # 未来确定支出：日期需落在「今天~今天+90天」窗口内才会被计入未来三个月
+        fixed_expenses = [
+            {"名称": "房租", "日期": "2026-10-01", "金额": 2500.00, "币种": "CNY", "类别": "居住", "备注": "季度房租"},
+            {"名称": "话费", "日期": "2026-10-05", "金额": 50.00, "币种": "CNY", "类别": "通讯", "备注": "月度套餐"},
+            {"名称": "宽带", "日期": "2026-11-01", "金额": 100.00, "币种": "CNY", "类别": "通讯", "备注": "月度宽带"},
+        ]
+        # 固定资产：估值按现值填写，计入"其他资产合计"
+        fixed_assets = [
+            {"资产类型": "电子设备", "名称描述": "联想小新Pro 16 笔记本", "估值": 4500.00, "币种": "CNY", "估值日期": "2026-08-30", "备注": "学习用"},
+            {"资产类型": "交通工具", "名称描述": "捷安特ATX 660 自行车", "估值": 600.00, "币种": "CNY", "估值日期": "2026-08-30", "备注": "校园代步"},
+        ]
+        for rel, obj in (("confirm/fixed_expenses.json", fixed_expenses),
+                         ("confirm/fixed_assets.json", fixed_assets)):
+            full = os.path.join(workspace, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                _json.dump(obj, f, ensure_ascii=False, indent=2)
+
     # --- 执行 ---
     gen_alipay()
     gen_wechat()
     gen_cmb_pdf()
     gen_balance()
     gen_debt()
+    gen_confirm()
     print(f"✅ 合成样例数据已生成: {workspace}")
 
 

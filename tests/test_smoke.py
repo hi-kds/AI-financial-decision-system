@@ -306,6 +306,48 @@ def test_apply_confirm_file_warns_unmatched():
         assert any("未找到匹配" in w for w in warns)
 
 
+# ---------- calc_overview: 固定资产/固定支出读取（同步自本地版） ----------
+
+import json as _json
+from billweave import calc_overview as co
+
+
+def test_load_fixed_assets_sums_valuation():
+    """fixed_assets.json 读取：汇总"估值"字段，负值/异常忽略。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cf = os.path.join(tmp, "confirm")
+        os.makedirs(cf, exist_ok=True)
+        with open(os.path.join(cf, "fixed_assets.json"), "w", encoding="utf-8") as f:
+            _json.dump([
+                {"资产类型": "电子设备", "名称描述": "笔记本", "估值": 4500.0, "币种": "CNY", "估值日期": "2026-08-30"},
+                {"资产类型": "交通工具", "名称描述": "自行车", "估值": 600.0, "币种": "CNY", "估值日期": "2026-08-30"},
+                {"资产类型": "已售", "名称描述": "旧手机", "估值": -100.0, "币种": "CNY", "估值日期": "2026-01-01"},
+            ], f, ensure_ascii=False)
+        assets, total = co.load_fixed_assets(tmp)
+        assert len(assets) == 3
+        assert total == 5100.0  # 4500 + 600，负估值忽略
+
+
+def test_load_fixed_assets_missing_returns_empty():
+    assert co.load_fixed_assets(tempfile.mkdtemp()) == ([], 0.0)
+
+
+def test_load_fixed_expenses_reads_confirm_file():
+    """fixed_expenses.json 读取：confirm/ 下顶层数组原样返回。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cf = os.path.join(tmp, "confirm")
+        os.makedirs(cf, exist_ok=True)
+        with open(os.path.join(cf, "fixed_expenses.json"), "w", encoding="utf-8") as f:
+            _json.dump([{"名称": "房租", "日期": "2026-10-01", "金额": 2500.0, "币种": "CNY"}], f, ensure_ascii=False)
+        data = co.load_fixed_expenses(tmp)
+        assert len(data) == 1
+        assert data[0]["名称"] == "房租"
+
+
+def test_load_fixed_expenses_missing_returns_empty():
+    assert co.load_fixed_expenses(tempfile.mkdtemp()) == []
+
+
 if __name__ == "__main__":
     # 不依赖 pytest 也能跑
     sys.exit(pytest.main([__file__, "-v"]))
